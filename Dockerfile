@@ -8,7 +8,7 @@ FROM openjdk:17-alpine
 ENV TZ=Europe/Berlin
 ENV ZDBDUMP.PORT=8080
 ENV XDG_CONFIG_HOME=/tmp
-RUN mkdir /home/zdbdump
+RUN mkdir /home/zdbdump && apk add curl
 COPY --from=MAVEN_CHAIN /tmp/target/zdbdump.jar /home/zdbdump/zdbdump.jar
 WORKDIR /home/zdbdump/
 CMD ["java", "-Xms256M", "-Xmx512G", "-jar", "zdbdump.jar"]
