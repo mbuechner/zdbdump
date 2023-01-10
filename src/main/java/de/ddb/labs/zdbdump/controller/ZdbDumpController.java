@@ -62,7 +62,7 @@ class ZdbDumpController {
             produces = "application/json"
     )
     @Async
-    public void ownloadDump(HttpServletRequest request) throws IOException, FileNotFoundException, XMLStreamException, TransformerConfigurationException {
+    public void createDump(HttpServletRequest request) throws IOException, FileNotFoundException, XMLStreamException, TransformerConfigurationException {
         downloadDump.run();
     }
 
@@ -71,6 +71,7 @@ class ZdbDumpController {
             value = "/",
             produces = "application/json"
     )
+    @ResponseBody
     public Map<String, ZonedDateTime> getFileList(HttpServletRequest request) {
         final String ruri = request.getRequestURI();
         final File dir = new File(outputPath);
@@ -89,10 +90,12 @@ class ZdbDumpController {
         return urlList;
     }
 
-    @RequestMapping(value = "/{filename}", method = RequestMethod.GET)
+    @RequestMapping(
+            method = RequestMethod.GET,
+            value = "/{filename}"
+    )
     @ResponseBody
     public ResponseEntity<InputStreamResource> getFile(@PathVariable String filename) throws FileNotFoundException, IOException {
-
         final File file = new File(outputPath + filename);
         final MediaType mediaType = MediaType.parseMediaType(Files.probeContentType(file.toPath()));
 
