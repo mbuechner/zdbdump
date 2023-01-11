@@ -15,9 +15,9 @@
  */
 package de.ddb.labs.zdbdump;
 
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
-import javax.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
@@ -27,6 +27,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.event.EventListener;
@@ -34,10 +35,10 @@ import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-@SpringBootApplication
+@SpringBootApplication(exclude = { SecurityAutoConfiguration.class })
 @EnableScheduling
 @ConditionalOnProperty(name = "scheduler.enabled", matchIfMissing = true)
-@EnableRetry(proxyTargetClass = true)
+@EnableRetry
 @EnableAsync
 @Slf4j
 public class Application {

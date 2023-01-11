@@ -16,6 +16,7 @@
 package de.ddb.labs.zdbdump.controller;
 
 import de.ddb.labs.zdbdump.cronjobs.ZdbDumpCreationCronJob;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -27,7 +28,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
-import javax.servlet.http.HttpServletRequest;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.transform.TransformerConfigurationException;
 import lombok.extern.slf4j.Slf4j;
@@ -76,21 +76,32 @@ class ZdbDumpController {
     public Map<String, String> getFileList(HttpServletRequest request) {
         final String ruri = request.getRequestURI();
         final File dir = new File(outputPath);
-        if (!dir.isDirectory() || !dir.canRead()) {
-            return null;
-        }
-        final File[] files = dir.listFiles();
         final Map<String, String> urlList = new HashMap<>();
+
+        if (!dir.isDirectory()) {
+            urlList.put("Status", "Error. Data directory is not correct configured.");
+            return urlList;
+        }
+
+        if (!dir.canRead()) {
+            urlList.put("Status", "Error. Can't read data directory.");
+            return urlList;
+        }
+
+        final File[] files = dir.listFiles();
 
         if (files != null) {
             for (int i = 0; i < files.length; ++i) {
                 final Instant instant = Instant.ofEpochMilli(files[i].lastModified());
-                urlList.put(baseurl + ruri + files[i].getName(), ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()).format(DateTimeFormatter.ISO_DATE_TIME));
+                urlList.put(
+                        baseurl + ruri + files[i].getName(),
+                        ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()).format(DateTimeFormatter.ISO_DATE_TIME)
+                );
             }
         }
         return urlList;
     }
-    
+
     @RequestMapping(
             method = RequestMethod.GET,
             value = "/{filename}"
