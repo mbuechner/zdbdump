@@ -25,6 +25,7 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import javax.xml.stream.XMLStreamException;
@@ -41,6 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 @RestController
@@ -72,24 +74,24 @@ class ZdbDumpController {
             produces = "application/json"
     )
     @ResponseBody
-    public Map<String, ZonedDateTime> getFileList(HttpServletRequest request) {
+    public Map<String, String> getFileList(HttpServletRequest request) {
         final String ruri = request.getRequestURI();
         final File dir = new File(outputPath);
         if (!dir.isDirectory() || !dir.canRead()) {
             return null;
         }
         final File[] files = dir.listFiles();
-        final Map<String, ZonedDateTime> urlList = new HashMap<>();
+        final Map<String, String> urlList = new HashMap<>();
 
         if (files != null) {
             for (int i = 0; i < files.length; ++i) {
                 final Instant instant = Instant.ofEpochMilli(files[i].lastModified());
-                urlList.put(baseurl + ruri + files[i].getName(), ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()));
+                urlList.put(baseurl + ruri + files[i].getName(), ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()).format(DateTimeFormatter.ISO_DATE_TIME));
             }
         }
         return urlList;
     }
-
+    
     @RequestMapping(
             method = RequestMethod.GET,
             value = "/{filename}"

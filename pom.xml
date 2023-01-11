@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.0.0</version>
+        <version>3.0.1</version>
     </parent>
     <groupId>de.ddb.labs</groupId>
     <artifactId>zdbdump</artifactId>
@@ -98,7 +98,6 @@
             <artifactId>h2-mvstore</artifactId>
             <version>2.1.214</version>
         </dependency>
-
     </dependencies>
     <reporting>
         <plugins>
