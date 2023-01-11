@@ -65,7 +65,7 @@ public class Application {
 
     @PreDestroy
     private void destroy() {
-        log.info("Destroy callback triggered: Closing database...");
+        log.info("Destroy callback triggered: Closing database ...");
         try {
             mvStore.close();
             httpClient.dispatcher().cancelAll();
@@ -88,7 +88,7 @@ public class Application {
     protected MVMap<String, String> mvStoreZdbData() {
         if (mvStoreZdbData == null) {
             initMvStore();
-            mvStoreZdbData = mvStore.openMap("zdbdumpconfiguration");
+            mvStoreZdbData = mvStore.openMap("zdbdump");
         }
         return mvStoreZdbData;
     }
@@ -100,8 +100,8 @@ public class Application {
             dispatcher.setMaxRequests(64);
             dispatcher.setMaxRequestsPerHost(8);
             httpClient = new OkHttpClient.Builder()
-                    .connectTimeout(0, TimeUnit.SECONDS)
-                    .readTimeout(0, TimeUnit.SECONDS)
+                    .connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(10, TimeUnit.SECONDS)
                     .dispatcher(dispatcher)
                     .build();
         }

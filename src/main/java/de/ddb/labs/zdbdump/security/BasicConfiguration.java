@@ -31,10 +31,10 @@ import org.springframework.security.web.SecurityFilterChain;
 @EnableWebSecurity
 public class BasicConfiguration {
 
-    @Value("${zdbdump.security.user}")
+    @Value("${spring.security.user.name}")
     private String userName;
 
-    @Value("${zdbdump.security.password}")
+    @Value("${spring.security.user.password}")
     private String userPassword;
 
     @Bean
@@ -50,19 +50,12 @@ public class BasicConfiguration {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http.authorizeHttpRequests()
-                .requestMatchers("/actuator/", "/actuator/*", "/maintenance/", "/maintenance/*")
-                .authenticated()
-                .anyRequest().permitAll()
-                .and()
-                .httpBasic()
-                ;
+        http.authorizeHttpRequests().anyRequest().permitAll();
         return http.build();
     }
 
     @Bean
     public PasswordEncoder passwordEncoder() {
-        final PasswordEncoder encoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
-        return encoder;
+        return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }
 }

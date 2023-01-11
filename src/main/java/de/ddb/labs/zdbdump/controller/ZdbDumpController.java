@@ -79,12 +79,12 @@ class ZdbDumpController {
         final Map<String, String> urlList = new HashMap<>();
 
         if (!dir.isDirectory()) {
-            urlList.put("Status", "Error. Data directory is not correct configured.");
+            urlList.put("Status", "Error. Data directory '" + outputPath + "' is not correct configured.");
             return urlList;
         }
 
         if (!dir.canRead()) {
-            urlList.put("Status", "Error. Can't read data directory.");
+            urlList.put("Status", "Error. Can't read data directory '" + outputPath + "'.");
             return urlList;
         }
 
@@ -109,19 +109,17 @@ class ZdbDumpController {
     @ResponseBody
     public ResponseEntity<InputStreamResource> getFile(@PathVariable String filename) throws FileNotFoundException, IOException {
         final File file = new File(outputPath + filename);
-        final MediaType mediaType = MediaType.parseMediaType(Files.probeContentType(file.toPath()));
-
-        if (!file.exists()) {
+        
+        if (!file.exists() || !file.canRead()) {
             return ResponseEntity.notFound().build();
         }
+        
+        final MediaType mediaType = MediaType.parseMediaType(Files.probeContentType(file.toPath()));
         final InputStreamResource resource = new InputStreamResource(new FileInputStream(file));
 
         return ResponseEntity.ok()
-                // Content-Disposition
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment;filename=" + file.getName())
-                // Content-Type
                 .contentType(mediaType)
-                // Contet-Length
                 .contentLength(file.length()) //
                 .lastModified(file.lastModified())
                 .body(resource);

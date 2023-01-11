@@ -338,10 +338,7 @@ public class ZdbDumpCreationCronJob {
             final Iterator<Map.Entry<String, String>> it = mvStoreZdbData.entrySet().iterator();
             count = 0;
             while (it.hasNext()) {
-                // Debug
-                // if (++count > 42) {
-                //    break;
-                // }
+
                 final Map.Entry<String, String> e = it.next();
                 final ByteArrayInputStream inputStream = new ByteArrayInputStream(e.getValue().getBytes(StandardCharsets.UTF_8));
                 final XMLEventReader xmlEventReader = xmlInFactory.createXMLEventReader(inputStream);
@@ -374,7 +371,7 @@ public class ZdbDumpCreationCronJob {
 
     }
     
-    public ZonedDateTime getLastModifiedRemote() throws IOException {
+    private ZonedDateTime getLastModifiedRemote() throws IOException {
         final Request request = new Request.Builder()
                 .url(DUMP_URL)
                 .head()
