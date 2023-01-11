@@ -15,9 +15,9 @@
  */
 package de.ddb.labs.zdbdump;
 
-import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
