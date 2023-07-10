@@ -100,8 +100,9 @@ public class Application {
             dispatcher.setMaxRequests(64);
             dispatcher.setMaxRequestsPerHost(8);
             httpClient = new OkHttpClient.Builder()
-                    .connectTimeout(5, TimeUnit.SECONDS)
-                    .readTimeout(10, TimeUnit.SECONDS)
+                    .connectTimeout(60, TimeUnit.SECONDS)
+                    .readTimeout(600, TimeUnit.SECONDS)
+                    .callTimeout(0, TimeUnit.SECONDS)
                     .dispatcher(dispatcher)
                     .build();
         }
