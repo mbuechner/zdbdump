@@ -71,6 +71,7 @@ import org.springframework.stereotype.Service;
 public class ZdbDumpCreationCronJob {
 
     private static final Logger log = LoggerFactory.getLogger(ZdbDumpCreationCronJob.class);
+    private static final int PROGRESS_LOG_STEP = 100_000;
 
     private final static String DUMP_URL = "https://data.dnb.de/opendata/zdb_lds.rdf.gz";
     private final static String HARVEST_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&metadataPrefix=RDFxml&set=zdb";
@@ -105,7 +106,9 @@ public class ZdbDumpCreationCronJob {
 
     private final XMLEventFactory xmlEventFactory = XMLEventFactory.newFactory();
 
-    private int count = 0;
+    private int dumpReadCount = 0;
+    private int harvestUpdateCount = 0;
+    private int outputWriteCount = 0;
 
     private final List<Namespace> nsl = new ArrayList<Namespace>() {
         {
@@ -155,8 +158,13 @@ public class ZdbDumpCreationCronJob {
         }
 
         try {
+            final long startedAt = System.currentTimeMillis();
             final Path tempDumpPath = Path.of(tempPath).resolve(outputFilename);
             final Path targetDumpPath = Path.of(outputPath).resolve(outputFilename);
+
+            dumpReadCount = 0;
+            harvestUpdateCount = 0;
+            outputWriteCount = 0;
 
             downloadZdbDump(tempDumpPath);
 
@@ -166,7 +174,6 @@ public class ZdbDumpCreationCronJob {
 
             LocalDateTime ldt = getLastModifiedRemote();
             log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
-            count = 0;
             while (ldt.isBefore(LocalDateTime.now())) {
                 final String from = "&from=" + ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
                 final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
@@ -174,7 +181,7 @@ public class ZdbDumpCreationCronJob {
                 harvestZdbRecords(HARVEST_URL + from + until);
                 ldt = ldt.plusMinutes(30);
             }
-            log.info("Finally wrote {} datasets to cache", count);
+            log.info("Finally applied {} harvested updates to cache", harvestUpdateCount);
 
             createNewZdbDump(tempDumpPath.toString());
 
@@ -182,6 +189,16 @@ public class ZdbDumpCreationCronJob {
             Files.createDirectories(targetDumpPath.getParent());
             Files.move(tempDumpPath, targetDumpPath, StandardCopyOption.REPLACE_EXISTING);
 
+            final long durationSeconds = (System.currentTimeMillis() - startedAt) / 1000;
+            final long outputSizeBytes = Files.exists(targetDumpPath) ? Files.size(targetDumpPath) : 0L;
+            log.info(
+                    "Run statistics: dumpRead={}, harvestedUpdates={}, writtenToDump={}, duration={}s, output={}, size={} bytes",
+                    dumpReadCount,
+                    harvestUpdateCount,
+                    outputWriteCount,
+                    durationSeconds,
+                    targetDumpPath,
+                    outputSizeBytes);
             log.info("Successfully finished.");
 
         } catch (Exception e) {
@@ -228,7 +245,7 @@ public class ZdbDumpCreationCronJob {
             mvStoreZdbData.clear();
             final TransformerFactory tf = TransformerFactory.newInstance();
             final Transformer t = tf.newTransformer();
-            count = 0;
+            dumpReadCount = 0;
             try {
 
                 while (xsr.nextTag() == XMLStreamConstants.START_ELEMENT) {
@@ -245,9 +262,8 @@ public class ZdbDumpCreationCronJob {
                             t.transform(new StAXSource(xsr), new StreamResult(writer));
 
                             mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
-                            if (++count % 100000 == 0) {
-
-                                log.info("Wrote {} datasets to cache ...", count);
+                            if (++dumpReadCount % PROGRESS_LOG_STEP == 0) {
+                                log.info("Read {} datasets from base dump into cache ...", dumpReadCount);
                             }
                         } catch (Exception e) {
                             log.error(e.getMessage());
@@ -257,7 +273,7 @@ public class ZdbDumpCreationCronJob {
             } catch (Exception e) {
                 log.error(e.getMessage());
             } finally {
-                log.info("Finally wrote {} datasets to cache", count);
+                log.info("Finally read {} datasets from base dump into cache", dumpReadCount);
             }
         }
         log.info("Successfully finished to write datasets to cache");
@@ -266,16 +282,18 @@ public class ZdbDumpCreationCronJob {
     private void harvestZdbRecords(String url)
             throws IOException, XMLStreamException, TransformerConfigurationException {
 
-        log.info("Start to harvest request {} ...", url);
         final TransformerFactory tf = TransformerFactory.newInstance();
         final Transformer t = tf.newTransformer();
 
-        final String resumptionToken = restClient.get()
-                .uri(url)
-                .exchange((request, response) -> {
-                    if (!response.getStatusCode().is2xxSuccessful()) {
-                        return null;
-                    }
+        final String resumptionToken;
+        try {
+            resumptionToken = restClient.get()
+                    .uri(url)
+                    .exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            throw new IOException("Harvest request failed for " + url + " with status "
+                                    + response.getStatusCode().value());
+                        }
 
                     try (final InputStream body = response.getBody()) {
                         if (body == null) {
@@ -304,7 +322,9 @@ public class ZdbDumpCreationCronJob {
                                     try {
                                         t.transform(new StAXSource(xsr), new StreamResult(writer));
                                         mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
-                                        ++count;
+                                        if (++harvestUpdateCount % PROGRESS_LOG_STEP == 0) {
+                                            log.info("Applied {} harvested updates to cache ...", harvestUpdateCount);
+                                        }
                                     } catch (Exception e) {
                                         log.error(e.getMessage());
                                     }
@@ -323,11 +343,14 @@ public class ZdbDumpCreationCronJob {
 
                         return nextResumptionToken;
                     } catch (XMLStreamException e) {
-                        throw new IOException("Failed to parse harvest response", e);
+                        throw new IOException("Failed to parse harvest response from " + url, e);
                     }
                 });
+        } catch (Exception e) {
+            log.error("Harvest failed for URL: {}", url, e);
+            throw e;
+        }
 
-        log.info("Wrote {} datasets to cache ...", count);
         if (resumptionToken != null) {
             harvestZdbRecords(HARVEST_WITH_RESUMPTION_TOKEN_URL + resumptionToken);
         }
@@ -356,7 +379,7 @@ public class ZdbDumpCreationCronJob {
 
             final XMLInputFactory xmlInFactory = XMLInputFactory.newFactory();
             final Iterator<Map.Entry<String, String>> it = mvStoreZdbData.entrySet().iterator();
-            count = 0;
+            outputWriteCount = 0;
             while (it.hasNext()) {
 
                 final Map.Entry<String, String> e = it.next();
@@ -376,12 +399,11 @@ public class ZdbDumpCreationCronJob {
                 xmlEventReader.close();
                 xmlEventWriter.add(xmlEventFactory.createCharacters("\n"));
 
-                if (++count % 100000 == 0) {
-
-                    log.info("Wrote {} datasets to \"{}\" ...", count, outputFile);
+                if (++outputWriteCount % PROGRESS_LOG_STEP == 0) {
+                    log.info("Wrote {} datasets to \"{}\" ...", outputWriteCount, outputFile);
                 }
             }
-            log.info("Successfully wrote {} datasets to \"{}\"", count, outputFile);
+            log.info("Successfully wrote {} datasets to \"{}\"", outputWriteCount, outputFile);
 
             xmlEventWriter.add(xmlEventFactory.createEndElement("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"));
             xmlEventWriter.add(xmlEventFactory.createCharacters("\n"));
