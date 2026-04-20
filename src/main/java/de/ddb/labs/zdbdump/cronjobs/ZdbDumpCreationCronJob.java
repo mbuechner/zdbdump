@@ -63,8 +63,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.retry.annotation.Backoff;
-import org.springframework.web.client.RestClient;
 import org.springframework.retry.annotation.Retryable;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -73,6 +74,8 @@ public class ZdbDumpCreationCronJob {
 
     private static final Logger log = LoggerFactory.getLogger(ZdbDumpCreationCronJob.class);
     private static final int PROGRESS_LOG_STEP = 100_000;
+    private static final int HARVEST_RETRY_ATTEMPTS = 3;
+    private static final long HARVEST_RETRY_DELAY_MILLIS = 2_000L;
 
     private final static String DUMP_URL = "https://data.dnb.de/opendata/zdb_lds.rdf.gz";
     private final static String HARVEST_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&metadataPrefix=RDFxml&set=zdb";
@@ -179,9 +182,10 @@ public class ZdbDumpCreationCronJob {
             log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
             while (ldt.isBefore(LocalDateTime.now())) {
                 final String from = "&from=" + ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
-                final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-                        + "Z";
-                harvestZdbRecords(HARVEST_URL + from + until);
+                final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
+                final String url = HARVEST_URL + from + until;
+                log.info("Start harvest from {} ...", url);
+                harvestZdbRecords(url);
                 ldt = ldt.plusMinutes(30);
             }
             log.info("Finally applied {} harvested updates to cache", harvestUpdateCount);
@@ -256,10 +260,7 @@ public class ZdbDumpCreationCronJob {
                     String fileName = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "about");
                     fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
 
-                    try (final ByteArrayOutputStream bos = new ByteArrayOutputStream(); // final Writer writer = new
-                                                                                        // OutputStreamWriter(new
-                                                                                        // GZIPOutputStream(bos),
-                                                                                        // StandardCharsets.UTF_8);
+                    try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
                             final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
                         try {
                             t.transform(new StAXSource(xsr), new StreamResult(writer));
@@ -287,80 +288,145 @@ public class ZdbDumpCreationCronJob {
 
         final TransformerFactory tf = TransformerFactory.newInstance();
         final Transformer t = tf.newTransformer();
-
-        final String resumptionToken;
-        try {
-            resumptionToken = restClient.get()
-                    .uri(url)
-                    .exchange((request, response) -> {
-                        if (!response.getStatusCode().is2xxSuccessful()) {
-                            throw new IOException("Harvest request failed for " + url + " with status "
-                                    + response.getStatusCode().value());
-                        }
-
-                    try (final InputStream body = response.getBody()) {
-                        if (body == null) {
-                            return null;
-                        }
-
-                        final XMLStreamReader xsr = createXmlStreamReader(
-                                new InputStreamReader(body, StandardCharsets.UTF_8),
-                                url);
-                        xsr.nextTag(); // Advance to statements element
-                        String nextResumptionToken = null;
-
-                        while (xsr.hasNext()) {
-                            if (xsr.next() != XMLStreamConstants.START_ELEMENT) {
-                                continue;
-                            }
-                            final String name = xsr.getName().getLocalPart();
-                            final String nameNamespace = xsr.getName().getNamespaceURI();
-
-                            if (name.equals("Description")
-                                    && nameNamespace.equals("http://www.w3.org/1999/02/22-rdf-syntax-ns#")) {
-                                String fileName = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-                                        "about");
-                                fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
-
-                                try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                                        final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8)) {
-                                    try {
-                                        t.transform(new StAXSource(xsr), new StreamResult(writer));
-                                        mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
-                                        if (++harvestUpdateCount % PROGRESS_LOG_STEP == 0) {
-                                            log.info("Applied {} harvested updates to cache ...", harvestUpdateCount);
-                                        }
-                                    } catch (Exception e) {
-                                        logXmlWarning(url, fileName, e);
-                                    }
-                                }
-                            }
-
-                            if (name.equals("resumptionToken")
-                                    && nameNamespace.equals("http://www.openarchives.org/OAI/2.0/")) {
-                                final String rt = xsr.getElementText();
-                                if (rt != null && !rt.isBlank()) {
-                                    log.debug("{} is {}", name, rt);
-                                    nextResumptionToken = rt;
-                                }
-                            }
-                        }
-
-                        return nextResumptionToken;
-                    } catch (XMLStreamException e) {
-                        logXmlWarning(url, null, e);
-                        throw new IOException("Failed to parse harvest response from " + url, e);
-                    }
-                });
-        } catch (Exception e) {
-            log.error("Harvest failed for URL: {}", url, e);
-            throw e;
-        }
+        final String resumptionToken = fetchHarvestResponseWithRetry(url, t);
 
         if (resumptionToken != null) {
             harvestZdbRecords(HARVEST_WITH_RESUMPTION_TOKEN_URL + resumptionToken);
         }
 
+    }
+
+    private String fetchHarvestResponseWithRetry(String url, Transformer transformer) throws IOException {
+        Exception lastException = null;
+
+        for (int attempt = 1; attempt <= HARVEST_RETRY_ATTEMPTS; attempt++) {
+            try {
+                return restClient.get()
+                        .uri(url)
+                        .exchange((request, response) -> {
+                            if (!response.getStatusCode().is2xxSuccessful()) {
+                                throw new IOException("Harvest request failed for " + url + " with status "
+                                        + response.getStatusCode().value());
+                            }
+
+                            try (final InputStream body = response.getBody()) {
+                                if (body == null) {
+                                    return null;
+                                }
+
+                                final XMLStreamReader xsr = createXmlStreamReader(
+                                        new InputStreamReader(body, StandardCharsets.UTF_8),
+                                        url);
+                                xsr.nextTag();
+                                String nextResumptionToken = null;
+
+                                while (xsr.hasNext()) {
+                                    if (xsr.next() != XMLStreamConstants.START_ELEMENT) {
+                                        continue;
+                                    }
+                                    final String name = xsr.getName().getLocalPart();
+                                    final String nameNamespace = xsr.getName().getNamespaceURI();
+
+                                    if (name.equals("Description")
+                                            && nameNamespace.equals("http://www.w3.org/1999/02/22-rdf-syntax-ns#")) {
+                                        String fileName = xsr.getAttributeValue(
+                                                "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                                                "about");
+                                        fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
+
+                                        try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                                                final Writer writer = new OutputStreamWriter(
+                                                        bos,
+                                                        StandardCharsets.UTF_8)) {
+                                            try {
+                                                transformer.transform(new StAXSource(xsr), new StreamResult(writer));
+                                                mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
+                                                if (++harvestUpdateCount % PROGRESS_LOG_STEP == 0) {
+                                                    log.info(
+                                                            "Applied {} harvested updates to cache ...",
+                                                            harvestUpdateCount);
+                                                }
+                                            } catch (Exception e) {
+                                                logXmlWarning(url, fileName, e);
+                                            }
+                                        }
+                                    }
+
+                                    if (name.equals("resumptionToken")
+                                            && nameNamespace.equals("http://www.openarchives.org/OAI/2.0/")) {
+                                        final String rt = xsr.getElementText();
+                                        if (rt != null && !rt.isBlank()) {
+                                            log.debug("{} is {}", name, rt);
+                                            nextResumptionToken = rt;
+                                        }
+                                    }
+                                }
+
+                                return nextResumptionToken;
+                            } catch (XMLStreamException e) {
+                                logXmlWarning(url, null, e);
+                                throw new IOException("Failed to parse harvest response from " + url, e);
+                            }
+                        });
+            } catch (Exception e) {
+                lastException = e;
+                if (!isTransientHarvestFailure(e) || attempt >= HARVEST_RETRY_ATTEMPTS) {
+                    break;
+                }
+                log.warn(
+                        "Harvest request attempt {}/{} failed for {}: {}. Retrying in {} ms ...",
+                        attempt,
+                        HARVEST_RETRY_ATTEMPTS,
+                        url,
+                        rootCauseMessage(e),
+                        HARVEST_RETRY_DELAY_MILLIS * attempt);
+                sleepBeforeRetry(url, attempt);
+            }
+        }
+
+        log.error("Harvest failed for URL after {} attempts: {}", HARVEST_RETRY_ATTEMPTS, url, lastException);
+        if (lastException instanceof IOException ioException) {
+            throw ioException;
+        }
+        throw new IOException("Harvest failed for " + url, lastException);
+    }
+
+    private void sleepBeforeRetry(String url, int attempt) throws IOException {
+        try {
+            Thread.sleep(HARVEST_RETRY_DELAY_MILLIS * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to retry harvest request for " + url, e);
+        }
+    }
+
+    private boolean isTransientHarvestFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ResourceAccessException) {
+                return true;
+            }
+            final String message = current.getMessage();
+            if (message != null) {
+                final String normalized = message.toLowerCase();
+                if (normalized.contains("connection reset")
+                        || normalized.contains("timed out")
+                        || normalized.contains("timeout")
+                        || normalized.contains("temporarily unavailable")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage() != null ? current.getMessage() : throwable.getMessage();
     }
 
     private void logXmlWarning(String source, String datasetId, Exception exception) {
