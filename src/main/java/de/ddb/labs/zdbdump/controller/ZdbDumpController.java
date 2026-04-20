@@ -22,6 +22,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -101,9 +102,16 @@ class ZdbDumpController {
     @ResponseBody
     public ResponseEntity<InputStreamResource> getFile(@PathVariable String filename)
             throws FileNotFoundException, IOException {
-        final File file = new File(outputPath + filename);
+        final Path basePath = Path.of(outputPath).toAbsolutePath().normalize();
+        final Path filePath = basePath.resolve(filename).normalize();
 
-        if (!file.exists() || !file.canRead()) {
+        if (!filePath.startsWith(basePath)) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        final File file = filePath.toFile();
+
+        if (!file.exists() || !file.isFile() || !file.canRead()) {
             return ResponseEntity.notFound().build();
         }
 

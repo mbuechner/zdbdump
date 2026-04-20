@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 import javax.xml.stream.XMLEventFactory;
@@ -90,14 +91,14 @@ public class ZdbDumpCreationCronJob {
     @Autowired
     private RestClient restClient;
 
-    private boolean isRunning = false;
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
     public boolean isRunning() {
-        return isRunning;
+        return isRunning.get();
     }
 
     public void setRunning(boolean running) {
-        isRunning = running;
+        isRunning.set(running);
     }
 
     private final XMLInputFactory xif = XMLInputFactory.newInstance();
@@ -148,25 +149,21 @@ public class ZdbDumpCreationCronJob {
             Exception.class }, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
     public void run() {
 
-        if (isRunning()) {
-            log.info("ZDB/RDF dump creation aready running. Abort.");
+        if (!isRunning.compareAndSet(false, true)) {
+            log.info("ZDB/RDF dump creation already running. Abort.");
             return;
         }
 
         try {
-            setRunning(true);
+            final Path tempDumpPath = Path.of(tempPath).resolve(outputFilename);
+            final Path targetDumpPath = Path.of(outputPath).resolve(outputFilename);
 
-            final String pathToTempZdbDump = tempPath + outputFilename;
-            final String pathToZdbDump = outputPath + outputFilename;
+            downloadZdbDump(tempDumpPath);
 
-            downloadZdbDump(pathToTempZdbDump);
+            loadZdbDumpToCache(tempDumpPath.toString());
 
-            loadZdbDumpToCache(pathToTempZdbDump);
+            Files.deleteIfExists(tempDumpPath);
 
-            // seccessfully loaded to cache -> delete dump file
-            Files.deleteIfExists(Path.of(pathToTempZdbDump));
-
-            // update from OAI until today (this hour)
             LocalDateTime ldt = getLastModifiedRemote();
             log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
             count = 0;
@@ -175,51 +172,45 @@ public class ZdbDumpCreationCronJob {
                 final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                         + "Z";
                 harvestZdbRecords(HARVEST_URL + from + until);
-                ldt = ldt.plusMinutes(30); // add 30 min. (recom. from DNB)
+                ldt = ldt.plusMinutes(30);
             }
             log.info("Finally wrote {} datasets to cache", count);
 
-            // write new dump to hdd
-            createNewZdbDump(pathToTempZdbDump);
+            createNewZdbDump(tempDumpPath.toString());
 
-            // move temp output file to path
-            log.info("Move ZDB dump from {} to {} ...", pathToTempZdbDump, pathToZdbDump);
-            Files.move(Path.of(pathToTempZdbDump), Path.of(pathToZdbDump), StandardCopyOption.REPLACE_EXISTING);
+            log.info("Move ZDB dump from {} to {} ...", tempDumpPath, targetDumpPath);
+            Files.createDirectories(targetDumpPath.getParent());
+            Files.move(tempDumpPath, targetDumpPath, StandardCopyOption.REPLACE_EXISTING);
 
-            log.info("Sucessfully finished.");
+            log.info("Successfully finished.");
 
         } catch (Exception e) {
-            log.error(e.getMessage());
+            log.error("Dump creation failed", e);
+            throw new IllegalStateException("Dump creation failed", e);
         } finally {
             setRunning(false);
         }
     }
 
-    private void downloadZdbDump(String tempFile) {
+    private void downloadZdbDump(Path tempFile) throws IOException {
 
-        // Download dump to temorary file
-        final File dumpFile = new File(tempFile);
-        log.info("Start to download dump from {} to {} ...", DUMP_URL, dumpFile);
+        log.info("Start to download dump from {} to {} ...", DUMP_URL, tempFile);
+        Files.createDirectories(tempFile.getParent());
 
-        try {
-            restClient.get()
-                    .uri(DUMP_URL)
-                    .exchange((request, response) -> {
-                        if (!response.getStatusCode().is2xxSuccessful()) {
-                            throw new IOException("Download failed with status " + response.getStatusCode().value());
+        restClient.get()
+                .uri(DUMP_URL)
+                .exchange((request, response) -> {
+                    if (!response.getStatusCode().is2xxSuccessful()) {
+                        throw new IOException("Download failed with status " + response.getStatusCode().value());
+                    }
+                    try (final InputStream body = response.getBody()) {
+                        if (body == null) {
+                            throw new IOException("Download returned an empty response body.");
                         }
-                        try (final InputStream body = response.getBody()) {
-                            if (body == null) {
-                                throw new IOException("Download returned an empty response body.");
-                            }
-                            Files.copy(body, dumpFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                        }
-                        return null;
-                    });
-        } catch (Exception e) {
-            log.error(e.getMessage());
-            return;
-        }
+                        Files.copy(body, tempFile, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    return null;
+                });
         log.info("Successfully downloaded dump.");
     }
 
@@ -390,9 +381,9 @@ public class ZdbDumpCreationCronJob {
                     log.info("Wrote {} datasets to \"{}\" ...", count, outputFile);
                 }
             }
-            log.info("Sucessfully wrote {} datasets to \"{}\"", count, outputFile);
+            log.info("Successfully wrote {} datasets to \"{}\"", count, outputFile);
 
-            xmlEventWriter.add(xmlEventFactory.createEndElement("rdf", "http://rdfs.org/ns/void#", "RDF"));
+            xmlEventWriter.add(xmlEventFactory.createEndElement("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF"));
             xmlEventWriter.add(xmlEventFactory.createCharacters("\n"));
             xmlEventWriter.add(xmlEventFactory.createEndDocument());
 

@@ -13,5 +13,5 @@ RUN mkdir -p /home/zdbdump /home/zdbdump/data /home/zdbdump/data/tmp && apk add 
 COPY --from=build /tmp/target/zdbdump.jar /home/zdbdump/zdbdump.jar
 WORKDIR /home/zdbdump/
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD curl --fail --silent http://127.0.0.1:8080/actuator/health || exit 1
-CMD ["java", "-Xms256M", "-Xmx512G", "-jar", "zdbdump.jar"]
+CMD ["java", "-Xms256m", "-Xmx512m", "-jar", "zdbdump.jar"]
 EXPOSE 8080
