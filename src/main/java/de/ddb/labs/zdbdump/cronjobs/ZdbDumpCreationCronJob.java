@@ -167,7 +167,8 @@ public class ZdbDumpCreationCronJob {
             Files.deleteIfExists(Path.of(pathToTempZdbDump));
 
             // update from OAI until today (this hour)
-            LocalDateTime ldt = getLastModifiedRemote().toLocalDateTime();
+            LocalDateTime ldt = getLastModifiedRemote();
+            log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
             count = 0;
             while (ldt.isBefore(LocalDateTime.now())) {
                 final String from = "&from=" + ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
@@ -400,24 +401,27 @@ public class ZdbDumpCreationCronJob {
 
     }
 
-    private ZonedDateTime getLastModifiedRemote() throws IOException {
+    private LocalDateTime getLastModifiedRemote() throws IOException {
         try {
             return restClient.head()
                     .uri(DUMP_URL)
                     .exchange((request, response) -> {
                         if (!response.getStatusCode().is2xxSuccessful()) {
-                            return null;
+                            throw new IOException("Failed to retrieve last modification date of dump. HTTP status: "
+                                    + response.getStatusCode().value());
                         }
                         final String lastModified = response.getHeaders().getFirst("Last-Modified");
                         if (lastModified == null || lastModified.isBlank()) {
-                            return null;
+                            throw new IOException(
+                                    "Failed to retrieve last modification date of dump. Last-Modified header is missing or empty.");
                         }
-                        return ZonedDateTime.parse(lastModified, DateTimeFormatter.RFC_1123_DATE_TIME);
+                        return ZonedDateTime.parse(lastModified, DateTimeFormatter.RFC_1123_DATE_TIME)
+                                .toLocalDateTime();
                     });
         } catch (Exception e) {
-            log.error(e.getMessage());
+            log.warn(e.getMessage());
+            return LocalDateTime.now(); // return now to avoid infinite loop in case of error
         }
-        return null;
     }
 
 }
