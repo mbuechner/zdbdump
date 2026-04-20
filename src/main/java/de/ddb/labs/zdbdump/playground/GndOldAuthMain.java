@@ -28,6 +28,7 @@ import java.io.PrintWriter;
 import java.io.StringReader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Objects;
 import java.util.zip.GZIPInputStream;
 import javax.xml.stream.XMLInputFactory;
@@ -45,16 +46,9 @@ import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpression;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
-import okhttp3.OkHttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import okhttp3.Request;
-import okhttp3.Response;
-import okhttp3.ResponseBody;
-import okio.Buffer;
-import okio.BufferedSink;
-import okio.BufferedSource;
-import okio.Okio;
+import org.springframework.web.client.RestClient;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -70,17 +64,17 @@ public class GndOldAuthMain {
 
     private final static String DOWNLOAD_URL = "https://data.dnb.de/opendata/authorities-gnd-person_lds.rdf.gz";
     private final static String XPATH_EXP = """
-                                            /*[namespace-uri()='http://www.w3.org/1999/02/22-rdf-syntax-ns#' and local-name()='Description']/*[namespace-uri()='https://d-nb.info/standards/elementset/gnd#' and local-name()='oldAuthorityNumber']""";
+            /*[namespace-uri()='http://www.w3.org/1999/02/22-rdf-syntax-ns#' and local-name()='Description']/*[namespace-uri()='https://d-nb.info/standards/elementset/gnd#' and local-name()='oldAuthorityNumber']""";
     private final static String BEACON_TEMPLATE = """
-                                                  {{GNDID}}|{{OLDAUTHNO}}""";
+            {{GNDID}}|{{OLDAUTHNO}}""";
     private final static String UMLENK_TEMPLATE = """
-                                                  {"@id":"https://d-nb.info/gnd/{{OLDAUTHNO}}","http://www.w3.org/2002/07/owl#sameAs":[{"@value":"https://d-nb.info/gnd/{{GNDID}}"}],"https://d-nb.info/standards/elementset/dnb#canonicalUri":[{"@value":"https://d-nb.info/gnd/{{GNDID}}"}]},""";
+            {"@id":"https://d-nb.info/gnd/{{OLDAUTHNO}}","http://www.w3.org/2002/07/owl#sameAs":[{"@value":"https://d-nb.info/gnd/{{GNDID}}"}],"https://d-nb.info/standards/elementset/dnb#canonicalUri":[{"@value":"https://d-nb.info/gnd/{{GNDID}}"}]},""";
     private final static String UMLENK_OUTPUT_FILE = "D:\\neu3\\output.json";
     private final static String BEACON_OUTPUT_FILE = "D:\\neu3\\output.txt";
 
     private final XMLInputFactory xif = XMLInputFactory.newInstance();
     private final XPath xPath = XPathFactory.newInstance().newXPath();
-    private final OkHttpClient httpClient = new OkHttpClient();
+    private final RestClient restClient = RestClient.create();
 
     public static void main(String[] args) {
         try {
@@ -90,7 +84,8 @@ public class GndOldAuthMain {
         }
     }
 
-    public void run() throws FileNotFoundException, IOException, XMLStreamException, TransformerConfigurationException, XPathExpressionException, TransformerException {
+    public void run() throws FileNotFoundException, IOException, XMLStreamException, TransformerConfigurationException,
+            XPathExpressionException, TransformerException {
 
         final File dumpFile = File.createTempFile("GndOldAuthMain-", ".tmp");
         dumpFile.deleteOnExit();
@@ -102,9 +97,13 @@ public class GndOldAuthMain {
 
         int count = 0;
 
-        try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
+        try (final BufferedReader in = new BufferedReader(
+                new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
 
-            try (PrintWriter beaconWriter = new PrintWriter(new FileOutputStream(BEACON_OUTPUT_FILE, false), true, StandardCharsets.UTF_8); PrintWriter jsonWriter = new PrintWriter(new FileOutputStream(UMLENK_OUTPUT_FILE, false), true, StandardCharsets.UTF_8);) {
+            try (PrintWriter beaconWriter = new PrintWriter(new FileOutputStream(BEACON_OUTPUT_FILE, false), true,
+                    StandardCharsets.UTF_8);
+                    PrintWriter jsonWriter = new PrintWriter(new FileOutputStream(UMLENK_OUTPUT_FILE, false), true,
+                            StandardCharsets.UTF_8);) {
                 try {
                     jsonWriter.print("[");
 
@@ -118,11 +117,13 @@ public class GndOldAuthMain {
                         String gndId = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "about");
                         gndId = gndId.replace("https://d-nb.info/gnd/", "");
 
-                        try (final ByteArrayOutputStream bos = new ByteArrayOutputStream(); final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
+                        try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                                final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
                             t.transform(new StAXSource(xsr), new StreamResult(writer));
 
                             final String xmlString = bos.toString(StandardCharsets.UTF_8);
-                            final NodeList oldAuthNodeList = (NodeList) xe.evaluate(new InputSource(new StringReader(xmlString)), XPathConstants.NODESET);
+                            final NodeList oldAuthNodeList = (NodeList) xe
+                                    .evaluate(new InputSource(new StringReader(xmlString)), XPathConstants.NODESET);
 
                             for (int i = 0; i < oldAuthNodeList.getLength(); ++i) {
                                 if (oldAuthNodeList.item(i).getNodeType() == Node.ELEMENT_NODE) {
@@ -163,30 +164,20 @@ public class GndOldAuthMain {
         Objects.requireNonNull(url, "url must not be null");
         Objects.requireNonNull(destFile, "destFile must not be null");
         log.info("Start download of " + url + "...");
-        final Request request = new Request.Builder().url(url).build();
-        final Response response = httpClient.newCall(request).execute();
-        final ResponseBody body = response.body();
-        long contentLength = body.contentLength();
-        final BufferedSource source = body.source();
-
-        final BufferedSink sink = Okio.buffer(Okio.sink(destFile));
-        final Buffer sinkBuffer = sink.getBuffer();
-
-        long totalBytesRead = 0;
-        int bufferSize = 8 * 1024;
-        int progressStep = 0;
-        for (long bytesRead; (bytesRead = source.read(sinkBuffer, bufferSize)) != -1;) {
-            sink.emit();
-            totalBytesRead += bytesRead;
-            int progress = (int) ((totalBytesRead * 100) / contentLength);
-            if (progress % 10 == 0 && progress != progressStep) {
-                log.info("Download in progress... " + progress + "%");
-                progressStep = progress;
-            }
-        }
-        sink.flush();
-        sink.close();
-        source.close();
+        restClient.get()
+                .uri(url)
+                .exchange((request, response) -> {
+                    if (!response.getStatusCode().is2xxSuccessful()) {
+                        throw new IOException("Download failed with status " + response.getStatusCode().value());
+                    }
+                    try (final var body = response.getBody()) {
+                        if (body == null) {
+                            throw new IOException("Download returned an empty response body.");
+                        }
+                        Files.copy(body, destFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    return null;
+                });
         log.info("Download finished and saved to " + destFile.getAbsolutePath() + ".");
     }
 }

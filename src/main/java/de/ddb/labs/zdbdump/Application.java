@@ -17,11 +17,10 @@ package de.ddb.labs.zdbdump;
 
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
-import okhttp3.Dispatcher;
-import okhttp3.OkHttpClient;
+import java.time.Duration;
 import org.h2.mvstore.MVMap;
 import org.h2.mvstore.MVStore;
 import org.slf4j.Logger;
@@ -33,9 +32,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.event.EventListener;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.web.client.RestClient;
 
 @SpringBootApplication
 @EnableScheduling
@@ -54,8 +55,6 @@ public class Application {
 
     @Value("${zdbdump.database}")
     private String databaseName;
-
-    private OkHttpClient httpClient; // http client
 
     private MVStore mvStore; // Key-Value-Store
 
@@ -78,9 +77,6 @@ public class Application {
             if (mvStore != null) {
                 mvStore.close();
             }
-            if (httpClient != null) {
-                httpClient.dispatcher().cancelAll();
-            }
         } catch (Exception e) {
             log.error("Could not close connection to database. {}", e.getMessage());
         }
@@ -94,7 +90,7 @@ public class Application {
                 mvStore = new MVStore.Builder()
                         .fileName(tempDirectory.resolve(databaseName).toString())
                         .compress()
-                        //.compressHigh()
+                        // .compressHigh()
                         .open();
             } catch (IOException e) {
                 throw new IllegalStateException("Could not initialize temp directory for MVStore", e);
@@ -112,18 +108,16 @@ public class Application {
     }
 
     @Bean
-    protected OkHttpClient httpClient() {
-        if (httpClient == null) {
-            final Dispatcher dispatcher = new Dispatcher();
-            dispatcher.setMaxRequests(64);
-            dispatcher.setMaxRequestsPerHost(8);
-            httpClient = new OkHttpClient.Builder()
-                    .connectTimeout(60, TimeUnit.SECONDS)
-                    .readTimeout(600, TimeUnit.SECONDS)
-                    .callTimeout(0, TimeUnit.SECONDS)
-                    .dispatcher(dispatcher)
-                    .build();
-        }
-        return httpClient;
+    protected RestClient restClient() {
+        final HttpClient httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(60))
+                .build();
+
+        final JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(Duration.ofMinutes(10));
+
+        return RestClient.builder()
+                .requestFactory(requestFactory)
+                .build();
     }
 }

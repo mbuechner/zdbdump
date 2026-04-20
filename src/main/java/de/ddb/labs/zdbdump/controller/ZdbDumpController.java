@@ -55,21 +55,14 @@ class ZdbDumpController {
     @Autowired
     private ZdbDumpCreationCronJob downloadDump;
 
-    @RequestMapping(
-            method = RequestMethod.GET,
-            value = "/createdump",
-            produces = "application/json"
-    )
+    @RequestMapping(method = RequestMethod.GET, value = "/createdump", produces = "application/json")
     @Async
-    public void createDump(HttpServletRequest request) throws IOException, FileNotFoundException, XMLStreamException, TransformerConfigurationException {
+    public void createDump(HttpServletRequest request)
+            throws IOException, FileNotFoundException, XMLStreamException, TransformerConfigurationException {
         downloadDump.run();
     }
 
-    @RequestMapping(
-            method = RequestMethod.GET,
-            value = "/",
-            produces = "application/json"
-    )
+    @RequestMapping(method = RequestMethod.GET, value = "/", produces = "application/json")
     @ResponseBody
     public Map<String, String> getFileList(HttpServletRequest request) {
         final String ruri = request.getRequestURI();
@@ -97,25 +90,23 @@ class ZdbDumpController {
                 final Instant instant = Instant.ofEpochMilli(file.lastModified());
                 urlList.put(
                         baseurl + ruri + file.getName(),
-                        ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()).format(DateTimeFormatter.ISO_DATE_TIME)
-                );
+                        ZonedDateTime.ofInstant(instant, ZoneId.systemDefault())
+                                .format(DateTimeFormatter.ISO_DATE_TIME));
             }
         }
         return urlList;
     }
 
-    @RequestMapping(
-            method = RequestMethod.GET,
-            value = "/{filename}"
-    )
+    @RequestMapping(method = RequestMethod.GET, value = "/{filename}")
     @ResponseBody
-    public ResponseEntity<InputStreamResource> getFile(@PathVariable String filename) throws FileNotFoundException, IOException {
+    public ResponseEntity<InputStreamResource> getFile(@PathVariable String filename)
+            throws FileNotFoundException, IOException {
         final File file = new File(outputPath + filename);
-        
+
         if (!file.exists() || !file.canRead()) {
             return ResponseEntity.notFound().build();
         }
-        
+
         final String detectedContentType = Files.probeContentType(file.toPath());
         final MediaType mediaType = (detectedContentType != null && !detectedContentType.isBlank())
                 ? MediaType.parseMediaType(detectedContentType)

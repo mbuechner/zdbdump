@@ -23,6 +23,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
@@ -54,18 +55,13 @@ import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.stax.StAXSource;
 import javax.xml.transform.stream.StreamResult;
-import okhttp3.Call;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-import okio.BufferedSink;
-import okio.Okio;
 import org.h2.mvstore.MVMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.retry.annotation.Backoff;
+import org.springframework.web.client.RestClient;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -78,13 +74,13 @@ public class ZdbDumpCreationCronJob {
     private final static String DUMP_URL = "https://data.dnb.de/opendata/zdb_lds.rdf.gz";
     private final static String HARVEST_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&metadataPrefix=RDFxml&set=zdb";
     private final static String HARVEST_WITH_RESUMPTION_TOKEN_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&resumptionToken=";
-    
+
     @Value("${zdbdump.path.output}")
     private String outputPath;
 
     @Value("${zdbdump.path.temp}")
     private String tempPath;
-        
+
     @Value("${zdbdump.output.filename}")
     private String outputFilename;
 
@@ -92,7 +88,7 @@ public class ZdbDumpCreationCronJob {
     private MVMap<String, String> mvStoreZdbData;
 
     @Autowired
-    private OkHttpClient httpClient;
+    private RestClient restClient;
 
     private boolean isRunning = false;
 
@@ -148,7 +144,8 @@ public class ZdbDumpCreationCronJob {
     };
 
     @Scheduled(cron = "${zdbdump.cron.job}")
-    @Retryable(retryFor = {Exception.class}, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
+    @Retryable(retryFor = {
+            Exception.class }, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
     public void run() {
 
         if (isRunning()) {
@@ -158,12 +155,12 @@ public class ZdbDumpCreationCronJob {
 
         try {
             setRunning(true);
-            
+
             final String pathToTempZdbDump = tempPath + outputFilename;
             final String pathToZdbDump = outputPath + outputFilename;
 
             downloadZdbDump(pathToTempZdbDump);
-            
+
             loadZdbDumpToCache(pathToTempZdbDump);
 
             // seccessfully loaded to cache -> delete dump file
@@ -174,7 +171,8 @@ public class ZdbDumpCreationCronJob {
             count = 0;
             while (ldt.isBefore(LocalDateTime.now())) {
                 final String from = "&from=" + ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
-                final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
+                final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                        + "Z";
                 harvestZdbRecords(HARVEST_URL + from + until);
                 ldt = ldt.plusMinutes(30); // add 30 min. (recom. from DNB)
             }
@@ -188,7 +186,7 @@ public class ZdbDumpCreationCronJob {
             Files.move(Path.of(pathToTempZdbDump), Path.of(pathToZdbDump), StandardCopyOption.REPLACE_EXISTING);
 
             log.info("Sucessfully finished.");
-            
+
         } catch (Exception e) {
             log.error(e.getMessage());
         } finally {
@@ -202,18 +200,21 @@ public class ZdbDumpCreationCronJob {
         final File dumpFile = new File(tempFile);
         log.info("Start to download dump from {} to {} ...", DUMP_URL, dumpFile);
 
-        // download dump from reomte
-        final Request request = new Request.Builder()
-                .url(DUMP_URL)
-                .get()
-                .build();
-
-        try (final Response response = httpClient.newCall(request).execute()) {
-            if (response.isSuccessful()) {
-                try (final BufferedSink sink = Okio.buffer(Okio.sink(dumpFile))) {
-                    sink.writeAll(response.body().source());
-                }
-            }
+        try {
+            restClient.get()
+                    .uri(DUMP_URL)
+                    .exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            throw new IOException("Download failed with status " + response.getStatusCode().value());
+                        }
+                        try (final InputStream body = response.getBody()) {
+                            if (body == null) {
+                                throw new IOException("Download returned an empty response body.");
+                            }
+                            Files.copy(body, dumpFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        return null;
+                    });
         } catch (Exception e) {
             log.error(e.getMessage());
             return;
@@ -221,12 +222,14 @@ public class ZdbDumpCreationCronJob {
         log.info("Successfully downloaded dump.");
     }
 
-    private void loadZdbDumpToCache(String pathToZdbDump) throws FileNotFoundException, IOException, XMLStreamException, TransformerConfigurationException {
+    private void loadZdbDumpToCache(String pathToZdbDump)
+            throws FileNotFoundException, IOException, XMLStreamException, TransformerConfigurationException {
         log.info("Start to write datasets to cache ...");
 
         final File dumpFile = new File(pathToZdbDump);
 
-        try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
+        try (final BufferedReader in = new BufferedReader(
+                new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
 
             final XMLStreamReader xsr = xif.createXMLStreamReader(in);
             xsr.nextTag(); // Advance to statements element
@@ -241,8 +244,11 @@ public class ZdbDumpCreationCronJob {
                     String fileName = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "about");
                     fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
 
-                    try (final ByteArrayOutputStream bos = new ByteArrayOutputStream(); // final Writer writer = new OutputStreamWriter(new GZIPOutputStream(bos), StandardCharsets.UTF_8);
-                             final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
+                    try (final ByteArrayOutputStream bos = new ByteArrayOutputStream(); // final Writer writer = new
+                                                                                        // OutputStreamWriter(new
+                                                                                        // GZIPOutputStream(bos),
+                                                                                        // StandardCharsets.UTF_8);
+                            final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
                         try {
                             t.transform(new StAXSource(xsr), new StreamResult(writer));
 
@@ -265,57 +271,69 @@ public class ZdbDumpCreationCronJob {
         log.info("Successfully finished to write datasets to cache");
     }
 
-    private void harvestZdbRecords(String url) throws IOException, XMLStreamException, TransformerConfigurationException {
+    private void harvestZdbRecords(String url)
+            throws IOException, XMLStreamException, TransformerConfigurationException {
 
         log.info("Start to harvest request {} ...", url);
-        final Request request = new Request.Builder()
-                .url(url)
-                .build();
-
-        final Call call = httpClient.newCall(request);
-        final Response response = call.execute();
-        if (!response.isSuccessful()) {
-            return;
-        }
-
-        final XMLStreamReader xsr = xif.createXMLStreamReader(response.body().byteStream());
-        xsr.nextTag(); // Advance to statements element
         final TransformerFactory tf = TransformerFactory.newInstance();
         final Transformer t = tf.newTransformer();
-        String resumptionToken = null;
 
-        while (xsr.hasNext()) {
-
-            if (xsr.next() != XMLStreamConstants.START_ELEMENT) {
-                continue;
-            }
-            final String name = xsr.getName().getLocalPart();
-            final String nameNamespace = xsr.getName().getNamespaceURI();
-
-            if (name.equals("Description") && nameNamespace.equals("http://www.w3.org/1999/02/22-rdf-syntax-ns#")) {
-                String fileName = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "about");
-                fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
-
-                try (final ByteArrayOutputStream bos = new ByteArrayOutputStream(); final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8);) {
-                    try {
-                        t.transform(new StAXSource(xsr), new StreamResult(writer));
-                        mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
-                        ++count;
-                    } catch (Exception e) {
-                        log.error(e.getMessage());
+        final String resumptionToken = restClient.get()
+                .uri(url)
+                .exchange((request, response) -> {
+                    if (!response.getStatusCode().is2xxSuccessful()) {
+                        return null;
                     }
-                }
-            }
 
-            // resumption token handling
-            if (name.equals("resumptionToken") && nameNamespace.equals("http://www.openarchives.org/OAI/2.0/")) {
-                final String rt = xsr.getElementText();
-                if (rt != null && !rt.isBlank()) {
-                    log.debug("{} is {}", name, rt);
-                    resumptionToken = rt;
-                }
-            }
-        }
+                    try (final InputStream body = response.getBody()) {
+                        if (body == null) {
+                            return null;
+                        }
+
+                        final XMLStreamReader xsr = xif.createXMLStreamReader(body);
+                        xsr.nextTag(); // Advance to statements element
+                        String nextResumptionToken = null;
+
+                        while (xsr.hasNext()) {
+                            if (xsr.next() != XMLStreamConstants.START_ELEMENT) {
+                                continue;
+                            }
+                            final String name = xsr.getName().getLocalPart();
+                            final String nameNamespace = xsr.getName().getNamespaceURI();
+
+                            if (name.equals("Description")
+                                    && nameNamespace.equals("http://www.w3.org/1999/02/22-rdf-syntax-ns#")) {
+                                String fileName = xsr.getAttributeValue("http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                                        "about");
+                                fileName = fileName.replace("https://ld.zdb-services.de/resource/", "");
+
+                                try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                                        final Writer writer = new OutputStreamWriter(bos, StandardCharsets.UTF_8)) {
+                                    try {
+                                        t.transform(new StAXSource(xsr), new StreamResult(writer));
+                                        mvStoreZdbData.put(fileName, bos.toString(StandardCharsets.UTF_8));
+                                        ++count;
+                                    } catch (Exception e) {
+                                        log.error(e.getMessage());
+                                    }
+                                }
+                            }
+
+                            if (name.equals("resumptionToken")
+                                    && nameNamespace.equals("http://www.openarchives.org/OAI/2.0/")) {
+                                final String rt = xsr.getElementText();
+                                if (rt != null && !rt.isBlank()) {
+                                    log.debug("{} is {}", name, rt);
+                                    nextResumptionToken = rt;
+                                }
+                            }
+                        }
+
+                        return nextResumptionToken;
+                    } catch (XMLStreamException e) {
+                        throw new IOException("Failed to parse harvest response", e);
+                    }
+                });
 
         log.info("Wrote {} datasets to cache ...", count);
         if (resumptionToken != null) {
@@ -323,21 +341,25 @@ public class ZdbDumpCreationCronJob {
         }
 
     }
-    
+
     private void createNewZdbDump(String outputFile) throws FileNotFoundException, IOException, XMLStreamException {
 
         log.info("Start to write dump to \"{}\" ...", outputFile);
 
-        try (final FileOutputStream outputWriter = new FileOutputStream(outputFile); final Writer writer = new OutputStreamWriter(new GZIPOutputStream(outputWriter), StandardCharsets.UTF_8);) {
+        try (final FileOutputStream outputWriter = new FileOutputStream(outputFile);
+                final Writer writer = new OutputStreamWriter(new GZIPOutputStream(outputWriter),
+                        StandardCharsets.UTF_8);) {
             final XMLOutputFactory xmlOutFactory = XMLOutputFactory.newFactory();
             xmlOutFactory.setProperty(XMLOutputFactory.IS_REPAIRING_NAMESPACES, true);
 
             final XMLEventWriter xmlEventWriter = xmlOutFactory.createXMLEventWriter(writer);
 
-            // xmlEventWriter.setDefaultNamespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#"); // setze Default-Namespace          
+            // xmlEventWriter.setDefaultNamespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#");
+            // // setze Default-Namespace
             xmlEventWriter.add(xmlEventFactory.createStartDocument("UTF-8", "1.0"));
             xmlEventWriter.add(xmlEventFactory.createCharacters("\n"));
-            xmlEventWriter.add(xmlEventFactory.createStartElement("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF", null, nsl.iterator()));
+            xmlEventWriter.add(xmlEventFactory.createStartElement("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                    "RDF", null, nsl.iterator()));
             xmlEventWriter.add(xmlEventFactory.createCharacters("\n"));
 
             final XMLInputFactory xmlInFactory = XMLInputFactory.newFactory();
@@ -346,7 +368,8 @@ public class ZdbDumpCreationCronJob {
             while (it.hasNext()) {
 
                 final Map.Entry<String, String> e = it.next();
-                final ByteArrayInputStream inputStream = new ByteArrayInputStream(e.getValue().getBytes(StandardCharsets.UTF_8));
+                final ByteArrayInputStream inputStream = new ByteArrayInputStream(
+                        e.getValue().getBytes(StandardCharsets.UTF_8));
                 final XMLEventReader xmlEventReader = xmlInFactory.createXMLEventReader(inputStream);
                 XMLEvent event = xmlEventReader.nextEvent();
                 // Skip ahead in the input to the opening document element
@@ -376,18 +399,21 @@ public class ZdbDumpCreationCronJob {
         }
 
     }
-    
+
     private ZonedDateTime getLastModifiedRemote() throws IOException {
-        final Request request = new Request.Builder()
-                .url(DUMP_URL)
-                .head()
-                .build();
-        try (final Response response = httpClient.newCall(request).execute()) {
-            if (response.isSuccessful()) {
-                final String d = response.header("Last-Modified");
-                final ZonedDateTime zdt = ZonedDateTime.parse(d, DateTimeFormatter.RFC_1123_DATE_TIME);
-                return zdt;
-            }
+        try {
+            return restClient.head()
+                    .uri(DUMP_URL)
+                    .exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            return null;
+                        }
+                        final String lastModified = response.getHeaders().getFirst("Last-Modified");
+                        if (lastModified == null || lastModified.isBlank()) {
+                            return null;
+                        }
+                        return ZonedDateTime.parse(lastModified, DateTimeFormatter.RFC_1123_DATE_TIME);
+                    });
         } catch (Exception e) {
             log.error(e.getMessage());
         }
