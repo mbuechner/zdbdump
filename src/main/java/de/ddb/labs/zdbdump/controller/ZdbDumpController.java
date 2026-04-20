@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Michael Büchner, Deutsche Digitale Bibliothek
+ * Copyright 2023-2026 Michael Büchner, Deutsche Digitale Bibliothek
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,6 @@ import java.util.HashMap;
 import java.util.Map;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.transform.TransformerConfigurationException;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.InputStreamResource;
@@ -45,7 +44,6 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 @RestController
-@Slf4j
 class ZdbDumpController {
 
     @Value("${zdbdump.path.output}")
@@ -91,10 +89,14 @@ class ZdbDumpController {
         final File[] files = dir.listFiles();
 
         if (files != null) {
-            for (int i = 0; i < files.length; ++i) {
-                final Instant instant = Instant.ofEpochMilli(files[i].lastModified());
+            for (final File file : files) {
+                if (!file.isFile() || !file.canRead() || file.length() == 0L) {
+                    continue;
+                }
+
+                final Instant instant = Instant.ofEpochMilli(file.lastModified());
                 urlList.put(
-                        baseurl + ruri + files[i].getName(),
+                        baseurl + ruri + file.getName(),
                         ZonedDateTime.ofInstant(instant, ZoneId.systemDefault()).format(DateTimeFormatter.ISO_DATE_TIME)
                 );
             }
@@ -114,7 +116,10 @@ class ZdbDumpController {
             return ResponseEntity.notFound().build();
         }
         
-        final MediaType mediaType = MediaType.parseMediaType(Files.probeContentType(file.toPath()));
+        final String detectedContentType = Files.probeContentType(file.toPath());
+        final MediaType mediaType = (detectedContentType != null && !detectedContentType.isBlank())
+                ? MediaType.parseMediaType(detectedContentType)
+                : MediaType.APPLICATION_OCTET_STREAM;
         final InputStreamResource resource = new InputStreamResource(new FileInputStream(file));
 
         return ResponseEntity.ok()

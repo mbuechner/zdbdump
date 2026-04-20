@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Michael Büchner, Deutsche Digitale Bibliothek
+ * Copyright 2023-2026 Michael Büchner, Deutsche Digitale Bibliothek
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,9 +54,6 @@ import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.stax.StAXSource;
 import javax.xml.transform.stream.StreamResult;
-import lombok.Getter;
-import lombok.Setter;
-import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -64,6 +61,8 @@ import okhttp3.Response;
 import okio.BufferedSink;
 import okio.Okio;
 import org.h2.mvstore.MVMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.retry.annotation.Backoff;
@@ -71,9 +70,10 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-@Slf4j
 @Service
 public class ZdbDumpCreationCronJob {
+
+    private static final Logger log = LoggerFactory.getLogger(ZdbDumpCreationCronJob.class);
 
     private final static String DUMP_URL = "https://data.dnb.de/opendata/zdb_lds.rdf.gz";
     private final static String HARVEST_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&metadataPrefix=RDFxml&set=zdb";
@@ -94,9 +94,15 @@ public class ZdbDumpCreationCronJob {
     @Autowired
     private OkHttpClient httpClient;
 
-    @Getter
-    @Setter
     private boolean isRunning = false;
+
+    public boolean isRunning() {
+        return isRunning;
+    }
+
+    public void setRunning(boolean running) {
+        isRunning = running;
+    }
 
     private final XMLInputFactory xif = XMLInputFactory.newInstance();
 
@@ -142,7 +148,7 @@ public class ZdbDumpCreationCronJob {
     };
 
     @Scheduled(cron = "${zdbdump.cron.job}")
-    @Retryable(value = {Exception.class}, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
+    @Retryable(retryFor = {Exception.class}, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
     public void run() {
 
         if (isRunning()) {

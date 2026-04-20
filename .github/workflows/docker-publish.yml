@@ -9,10 +9,8 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-    branches: [ main ]
 
 env:
-  # TODO: Change variable to your image's name.
   IMAGE_NAME: zdbdump
 
 jobs:
@@ -22,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
 
       - name: Run tests
         run: |
@@ -42,7 +40,7 @@ jobs:
     if: github.event_name == 'push'
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
 
       - name: Build image
         run: docker build . --file Dockerfile --tag $IMAGE_NAME

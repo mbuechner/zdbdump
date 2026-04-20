@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Michael Büchner, Deutsche Digitale Bibliothek
+ * Copyright 2023-2026 Michael Büchner, Deutsche Digitale Bibliothek
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,19 @@ package de.ddb.labs.zdbdump;
 
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
-import lombok.extern.slf4j.Slf4j;
 import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
 import org.h2.mvstore.MVMap;
 import org.h2.mvstore.MVStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.event.EventListener;
@@ -35,17 +37,21 @@ import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-@SpringBootApplication(exclude = { SecurityAutoConfiguration.class })
+@SpringBootApplication
 @EnableScheduling
 @ConditionalOnProperty(name = "scheduler.enabled", matchIfMissing = true)
 @EnableRetry
 @EnableAsync
-@Slf4j
 public class Application {
+
+    private static final Logger log = LoggerFactory.getLogger(Application.class);
 
     @Value("${zdbdump.path.temp}")
     private String tempPath;
-    
+
+    @Value("${zdbdump.path.output}")
+    private String outputPath;
+
     @Value("${zdbdump.database}")
     private String databaseName;
 
@@ -61,14 +67,20 @@ public class Application {
 
     @EventListener(ApplicationReadyEvent.class)
     private void afterStartup() throws IOException {
+        Files.createDirectories(Path.of(tempPath));
+        Files.createDirectories(Path.of(outputPath));
     }
 
     @PreDestroy
     private void destroy() {
         log.info("Destroy callback triggered: Closing database ...");
         try {
-            mvStore.close();
-            httpClient.dispatcher().cancelAll();
+            if (mvStore != null) {
+                mvStore.close();
+            }
+            if (httpClient != null) {
+                httpClient.dispatcher().cancelAll();
+            }
         } catch (Exception e) {
             log.error("Could not close connection to database. {}", e.getMessage());
         }
@@ -76,11 +88,17 @@ public class Application {
 
     private void initMvStore() {
         if (mvStore == null) {
-            mvStore = new MVStore.Builder()
-                    .fileName(tempPath + databaseName)
-                    .compress()
-                    //.compressHigh()
-                    .open();
+            try {
+                final Path tempDirectory = Path.of(tempPath);
+                Files.createDirectories(tempDirectory);
+                mvStore = new MVStore.Builder()
+                        .fileName(tempDirectory.resolve(databaseName).toString())
+                        .compress()
+                        //.compressHigh()
+                        .open();
+            } catch (IOException e) {
+                throw new IllegalStateException("Could not initialize temp directory for MVStore", e);
+            }
         }
     }
 

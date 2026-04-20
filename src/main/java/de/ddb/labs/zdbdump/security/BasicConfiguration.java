@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Michael Büchner, Deutsche Digitale Bibliothek
+ * Copyright 2023-2026 Michael Büchner, Deutsche Digitale Bibliothek
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package de.ddb.labs.zdbdump.security;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.userdetails.User;
@@ -50,7 +51,12 @@ public class BasicConfiguration {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http.authorizeHttpRequests().anyRequest().permitAll();
+        http
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/createdump"))
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/createdump").authenticated()
+                        .anyRequest().permitAll())
+                .httpBasic(Customizer.withDefaults());
         return http.build();
     }
 
