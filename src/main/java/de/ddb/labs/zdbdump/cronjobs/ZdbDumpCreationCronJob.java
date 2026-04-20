@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -110,42 +111,44 @@ public class ZdbDumpCreationCronJob {
     private int harvestUpdateCount = 0;
     private int outputWriteCount = 0;
 
-    private final List<Namespace> nsl = new ArrayList<Namespace>() {
-        {
-            add(xmlEventFactory.createNamespace("schema", "http://schema.org/"));
-            add(xmlEventFactory.createNamespace("gndo", "https://d-nb.info/standards/elementset/gnd#"));
-            add(xmlEventFactory.createNamespace("lib", "http://purl.org/library/"));
-            add(xmlEventFactory.createNamespace("owl", "http://www.w3.org/2002/07/owl#"));
-            add(xmlEventFactory.createNamespace("xsd", "http://www.w3.org/2001/XMLSchema#"));
-            add(xmlEventFactory.createNamespace("skos", "http://www.w3.org/2004/02/skos/core#"));
-            add(xmlEventFactory.createNamespace("rdfs", "http://www.w3.org/2000/01/rdf-schema#"));
-            add(xmlEventFactory.createNamespace("editeur", "https://ns.editeur.org/thema/"));
-            add(xmlEventFactory.createNamespace("geo", "http://www.opengis.net/ont/geosparql#"));
-            add(xmlEventFactory.createNamespace("umbel", "http://umbel.org/umbel#"));
-            add(xmlEventFactory.createNamespace("rdau", "http://rdaregistry.info/Elements/u/"));
-            add(xmlEventFactory.createNamespace("sf", "http://www.opengis.net/ont/sf#"));
-            add(xmlEventFactory.createNamespace("bflc", "http://id.loc.gov/ontologies/bflc/"));
-            add(xmlEventFactory.createNamespace("dcterms", "http://purl.org/dc/terms/"));
-            add(xmlEventFactory.createNamespace("vivo", "http://vivoweb.org/ontology/core#"));
-            add(xmlEventFactory.createNamespace("isbd", "http://iflastandards.info/ns/isbd/elements/"));
-            add(xmlEventFactory.createNamespace("foaf", "http://xmlns.com/foaf/0.1/"));
-            add(xmlEventFactory.createNamespace("mo", "http://purl.org/ontology/mo/"));
-            add(xmlEventFactory.createNamespace("marcRole", "http://id.loc.gov/vocabulary/relators/"));
-            add(xmlEventFactory.createNamespace("agrelon", "https://d-nb.info/standards/elementset/agrelon#"));
-            add(xmlEventFactory.createNamespace("dcmitype", "http://purl.org/dc/dcmitype/"));
-            add(xmlEventFactory.createNamespace("dbp", "http://dbpedia.org/property/"));
-            add(xmlEventFactory.createNamespace("dnbt", "https://d-nb.info/standards/elementset/dnb#"));
-            add(xmlEventFactory.createNamespace("madsrdf", "http://www.loc.gov/mads/rdf/v1#"));
-            add(xmlEventFactory.createNamespace("dnb_intern", "http://dnb.de/"));
-            add(xmlEventFactory.createNamespace("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"));
-            add(xmlEventFactory.createNamespace("v", "http://www.w3.org/2006/vcard/ns#"));
-            add(xmlEventFactory.createNamespace("wdrs", "http://www.w3.org/2007/05/powder-s#"));
-            add(xmlEventFactory.createNamespace("ebu", "http://www.ebu.ch/metadata/ontologies/ebucore/ebucore#"));
-            add(xmlEventFactory.createNamespace("bibo", "http://purl.org/ontology/bibo/"));
-            add(xmlEventFactory.createNamespace("gbv", "http://purl.org/ontology/gbv/"));
-            add(xmlEventFactory.createNamespace("dc", "http://purl.org/dc/elements/1.1/"));
-        }
-    };
+    private final List<Namespace> nsl = createNamespaces();
+
+    private List<Namespace> createNamespaces() {
+        final List<Namespace> namespaces = new ArrayList<>();
+        namespaces.add(xmlEventFactory.createNamespace("schema", "http://schema.org/"));
+        namespaces.add(xmlEventFactory.createNamespace("gndo", "https://d-nb.info/standards/elementset/gnd#"));
+        namespaces.add(xmlEventFactory.createNamespace("lib", "http://purl.org/library/"));
+        namespaces.add(xmlEventFactory.createNamespace("owl", "http://www.w3.org/2002/07/owl#"));
+        namespaces.add(xmlEventFactory.createNamespace("xsd", "http://www.w3.org/2001/XMLSchema#"));
+        namespaces.add(xmlEventFactory.createNamespace("skos", "http://www.w3.org/2004/02/skos/core#"));
+        namespaces.add(xmlEventFactory.createNamespace("rdfs", "http://www.w3.org/2000/01/rdf-schema#"));
+        namespaces.add(xmlEventFactory.createNamespace("editeur", "https://ns.editeur.org/thema/"));
+        namespaces.add(xmlEventFactory.createNamespace("geo", "http://www.opengis.net/ont/geosparql#"));
+        namespaces.add(xmlEventFactory.createNamespace("umbel", "http://umbel.org/umbel#"));
+        namespaces.add(xmlEventFactory.createNamespace("rdau", "http://rdaregistry.info/Elements/u/"));
+        namespaces.add(xmlEventFactory.createNamespace("sf", "http://www.opengis.net/ont/sf#"));
+        namespaces.add(xmlEventFactory.createNamespace("bflc", "http://id.loc.gov/ontologies/bflc/"));
+        namespaces.add(xmlEventFactory.createNamespace("dcterms", "http://purl.org/dc/terms/"));
+        namespaces.add(xmlEventFactory.createNamespace("vivo", "http://vivoweb.org/ontology/core#"));
+        namespaces.add(xmlEventFactory.createNamespace("isbd", "http://iflastandards.info/ns/isbd/elements/"));
+        namespaces.add(xmlEventFactory.createNamespace("foaf", "http://xmlns.com/foaf/0.1/"));
+        namespaces.add(xmlEventFactory.createNamespace("mo", "http://purl.org/ontology/mo/"));
+        namespaces.add(xmlEventFactory.createNamespace("marcRole", "http://id.loc.gov/vocabulary/relators/"));
+        namespaces.add(xmlEventFactory.createNamespace("agrelon", "https://d-nb.info/standards/elementset/agrelon#"));
+        namespaces.add(xmlEventFactory.createNamespace("dcmitype", "http://purl.org/dc/dcmitype/"));
+        namespaces.add(xmlEventFactory.createNamespace("dbp", "http://dbpedia.org/property/"));
+        namespaces.add(xmlEventFactory.createNamespace("dnbt", "https://d-nb.info/standards/elementset/dnb#"));
+        namespaces.add(xmlEventFactory.createNamespace("madsrdf", "http://www.loc.gov/mads/rdf/v1#"));
+        namespaces.add(xmlEventFactory.createNamespace("dnb_intern", "http://dnb.de/"));
+        namespaces.add(xmlEventFactory.createNamespace("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"));
+        namespaces.add(xmlEventFactory.createNamespace("v", "http://www.w3.org/2006/vcard/ns#"));
+        namespaces.add(xmlEventFactory.createNamespace("wdrs", "http://www.w3.org/2007/05/powder-s#"));
+        namespaces.add(xmlEventFactory.createNamespace("ebu", "http://www.ebu.ch/metadata/ontologies/ebucore/ebucore#"));
+        namespaces.add(xmlEventFactory.createNamespace("bibo", "http://purl.org/ontology/bibo/"));
+        namespaces.add(xmlEventFactory.createNamespace("gbv", "http://purl.org/ontology/gbv/"));
+        namespaces.add(xmlEventFactory.createNamespace("dc", "http://purl.org/dc/elements/1.1/"));
+        return namespaces;
+    }
 
     @Scheduled(cron = "${zdbdump.cron.job}")
     @Retryable(retryFor = {
@@ -240,7 +243,7 @@ public class ZdbDumpCreationCronJob {
         try (final BufferedReader in = new BufferedReader(
                 new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
 
-            final XMLStreamReader xsr = xif.createXMLStreamReader(in);
+            final XMLStreamReader xsr = createXmlStreamReader(in, pathToZdbDump);
             xsr.nextTag(); // Advance to statements element
             mvStoreZdbData.clear();
             final TransformerFactory tf = TransformerFactory.newInstance();
@@ -266,12 +269,12 @@ public class ZdbDumpCreationCronJob {
                                 log.info("Read {} datasets from base dump into cache ...", dumpReadCount);
                             }
                         } catch (Exception e) {
-                            log.error(e.getMessage());
+                            logXmlWarning(pathToZdbDump, fileName, e);
                         }
                     }
                 }
             } catch (Exception e) {
-                log.error(e.getMessage());
+                logXmlWarning(pathToZdbDump, null, e);
             } finally {
                 log.info("Finally read {} datasets from base dump into cache", dumpReadCount);
             }
@@ -300,7 +303,9 @@ public class ZdbDumpCreationCronJob {
                             return null;
                         }
 
-                        final XMLStreamReader xsr = xif.createXMLStreamReader(body);
+                        final XMLStreamReader xsr = createXmlStreamReader(
+                                new InputStreamReader(body, StandardCharsets.UTF_8),
+                                url);
                         xsr.nextTag(); // Advance to statements element
                         String nextResumptionToken = null;
 
@@ -326,7 +331,7 @@ public class ZdbDumpCreationCronJob {
                                             log.info("Applied {} harvested updates to cache ...", harvestUpdateCount);
                                         }
                                     } catch (Exception e) {
-                                        log.error(e.getMessage());
+                                        logXmlWarning(url, fileName, e);
                                     }
                                 }
                             }
@@ -343,6 +348,7 @@ public class ZdbDumpCreationCronJob {
 
                         return nextResumptionToken;
                     } catch (XMLStreamException e) {
+                        logXmlWarning(url, null, e);
                         throw new IOException("Failed to parse harvest response from " + url, e);
                     }
                 });
@@ -355,6 +361,39 @@ public class ZdbDumpCreationCronJob {
             harvestZdbRecords(HARVEST_WITH_RESUMPTION_TOKEN_URL + resumptionToken);
         }
 
+    }
+
+    private void logXmlWarning(String source, String datasetId, Exception exception) {
+        final XMLStreamException xmlException = findXmlStreamException(exception);
+        final String datasetInfo = datasetId != null && !datasetId.isBlank() ? ", dataset=" + datasetId : "";
+
+        if (xmlException != null && xmlException.getLocation() != null) {
+            log.warn(
+                    "Malformed XML in {}{} at line {}, column {}: {}",
+                    source,
+                    datasetInfo,
+                    xmlException.getLocation().getLineNumber(),
+                    xmlException.getLocation().getColumnNumber(),
+                    xmlException.getMessage());
+            return;
+        }
+
+        log.warn("Malformed XML in {}{}: {}", source, datasetInfo, exception.getMessage());
+    }
+
+    private XMLStreamException findXmlStreamException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof XMLStreamException xmlStreamException) {
+                return xmlStreamException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private XMLStreamReader createXmlStreamReader(Reader reader, String sourceDescription) throws XMLStreamException {
+        return xif.createXMLStreamReader(new XmlSanitizingReader(reader, sourceDescription, log));
     }
 
     private void createNewZdbDump(String outputFile) throws FileNotFoundException, IOException, XMLStreamException {
