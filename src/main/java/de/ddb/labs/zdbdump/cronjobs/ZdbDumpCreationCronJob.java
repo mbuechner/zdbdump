@@ -80,6 +80,8 @@ public class ZdbDumpCreationCronJob {
     private final static String DUMP_URL = "https://data.dnb.de/opendata/zdb_lds.rdf.gz";
     private final static String HARVEST_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&metadataPrefix=RDFxml&set=zdb";
     private final static String HARVEST_WITH_RESUMPTION_TOKEN_URL = "https://services.dnb.de/oai/repository?verb=ListRecords&resumptionToken=";
+    private final static String BASE_DUMP_CACHE_FILENAME = "zdb_lds_base.rdf.gz";
+    private final static String BASE_DUMP_METADATA_FILENAME = "zdb_lds_base.metadata";
 
     @Value("${zdbdump.path.output}")
     private String outputPath;
@@ -165,6 +167,7 @@ public class ZdbDumpCreationCronJob {
 
         try {
             final long startedAt = System.currentTimeMillis();
+            final Path baseDumpCachePath = Path.of(tempPath).resolve(BASE_DUMP_CACHE_FILENAME);
             final Path tempDumpPath = Path.of(tempPath).resolve(outputFilename);
             final Path targetDumpPath = Path.of(outputPath).resolve(outputFilename);
 
@@ -172,11 +175,9 @@ public class ZdbDumpCreationCronJob {
             harvestUpdateCount = 0;
             outputWriteCount = 0;
 
-            downloadZdbDump(tempDumpPath);
+            downloadZdbDumpIfNeeded(baseDumpCachePath);
 
-            loadZdbDumpToCache(tempDumpPath.toString());
-
-            Files.deleteIfExists(tempDumpPath);
+            loadZdbDumpToCache(baseDumpCachePath.toString());
 
             LocalDateTime ldt = getLastModifiedRemote();
             log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
@@ -225,10 +226,30 @@ public class ZdbDumpCreationCronJob {
         }
     }
 
-    private void downloadZdbDump(Path tempFile) throws IOException {
+    private void downloadZdbDumpIfNeeded(Path cachedDumpPath) throws IOException {
+        final Path metadataPath = cachedDumpPath.resolveSibling(BASE_DUMP_METADATA_FILENAME);
+        final LocalDateTime remoteLastModified = getLastModifiedRemote();
 
-        log.info("Start to download dump from {} to {} ...", DUMP_URL, tempFile);
-        Files.createDirectories(tempFile.getParent());
+        if (Files.exists(cachedDumpPath) && Files.exists(metadataPath)) {
+            final LocalDateTime cachedLastModified = readLastModifiedFromMetadata(metadataPath);
+            if (cachedLastModified != null && !remoteLastModified.isAfter(cachedLastModified)) {
+                log.info(
+                        "Local base dump at {} is up to date (cached: {}, remote: {}). Skipping download.",
+                        cachedDumpPath,
+                        cachedLastModified,
+                        remoteLastModified);
+                return;
+            }
+            log.info(
+                    "Remote dump is newer (cached: {}, remote: {}). Downloading...",
+                    cachedLastModified,
+                    remoteLastModified);
+        } else {
+            log.info("No local base dump found at {}. Downloading...", cachedDumpPath);
+        }
+
+        log.info("Start to download dump from {} to {} ...", DUMP_URL, cachedDumpPath);
+        Files.createDirectories(cachedDumpPath.getParent());
 
         restClient.get()
                 .uri(DUMP_URL)
@@ -240,11 +261,34 @@ public class ZdbDumpCreationCronJob {
                         if (body == null) {
                             throw new IOException("Download returned an empty response body.");
                         }
-                        Files.copy(body, tempFile, StandardCopyOption.REPLACE_EXISTING);
+                        Files.copy(body, cachedDumpPath, StandardCopyOption.REPLACE_EXISTING);
                     }
                     return null;
                 });
+
+        writeLastModifiedToMetadata(metadataPath, remoteLastModified);
         log.info("Successfully downloaded dump.");
+    }
+
+    private LocalDateTime readLastModifiedFromMetadata(Path metadataPath) {
+        try {
+            final String content = Files.readString(metadataPath, StandardCharsets.UTF_8).trim();
+            return LocalDateTime.parse(content, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        } catch (Exception e) {
+            log.warn("Failed to read metadata from {}: {}", metadataPath, e.getMessage());
+            return null;
+        }
+    }
+
+    private void writeLastModifiedToMetadata(Path metadataPath, LocalDateTime lastModified) {
+        try {
+            Files.writeString(
+                    metadataPath,
+                    lastModified.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("Failed to write metadata to {}: {}", metadataPath, e.getMessage());
+        }
     }
 
     private void loadZdbDumpToCache(String pathToZdbDump)
