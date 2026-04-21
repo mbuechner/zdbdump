@@ -180,15 +180,24 @@ public class ZdbDumpCreationCronJob {
 
             LocalDateTime ldt = getLastModifiedRemote();
             log.info("Last modification of dump at {} was {}", DUMP_URL, ldt);
+            int harvestWindowCount = 0;
+            if (ldt.isBefore(LocalDateTime.now())) {
+                log.info("Start to harvest dataset updates from {} to cache ...", HARVEST_URL);
+            } else {
+                log.info("Dump at {} is up to date. No harvest needed.", DUMP_URL);
+            }
             while (ldt.isBefore(LocalDateTime.now())) {
                 final String from = "&from=" + ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
                 final String until = "&until=" + ldt.plusMinutes(30).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
                 final String url = HARVEST_URL + from + until;
-                log.info("Start harvest from {} ...", url);
+                log.debug("Start harvest from {} ...", url);
                 harvestZdbRecords(url);
                 ldt = ldt.plusMinutes(30);
+                if (++harvestWindowCount % 500 == 0) {
+                    log.info("Processed {} harvest windows, {} updates applied so far ...", harvestWindowCount, harvestUpdateCount);
+                }
             }
-            log.info("Finally applied {} harvested updates to cache", harvestUpdateCount);
+            log.info("Finally applied {} harvested updates across {} harvest windows to cache", harvestUpdateCount, harvestWindowCount);
 
             createNewZdbDump(tempDumpPath.toString());
 
@@ -247,7 +256,8 @@ public class ZdbDumpCreationCronJob {
         try (final BufferedReader in = new BufferedReader(
                 new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
 
-            final XMLStreamReader xsr = createXmlStreamReader(in, pathToZdbDump);
+            final XmlSanitizingReader sanitizingReader = createSanitizingReader(in, pathToZdbDump);
+            final XMLStreamReader xsr = createXmlStreamReader(sanitizingReader);
             xsr.nextTag(); // Advance to statements element
             mvStoreZdbData.clear();
             final TransformerFactory tf = TransformerFactory.newInstance();
@@ -270,12 +280,12 @@ public class ZdbDumpCreationCronJob {
                                 log.info("Read {} datasets from base dump into cache ...", dumpReadCount);
                             }
                         } catch (Exception e) {
-                            logXmlWarning(pathToZdbDump, fileName, e);
+                            logXmlWarning(pathToZdbDump, fileName, e, sanitizingReader);
                         }
                     }
                 }
             } catch (Exception e) {
-                logXmlWarning(pathToZdbDump, null, e);
+                logXmlWarning(pathToZdbDump, null, e, sanitizingReader);
             } finally {
                 log.info("Finally read {} datasets from base dump into cache", dumpReadCount);
             }
@@ -314,9 +324,10 @@ public class ZdbDumpCreationCronJob {
                                     return null;
                                 }
 
-                                final XMLStreamReader xsr = createXmlStreamReader(
+                                final XmlSanitizingReader sanitizingReader = createSanitizingReader(
                                         new InputStreamReader(body, StandardCharsets.UTF_8),
                                         url);
+                                final XMLStreamReader xsr = createXmlStreamReader(sanitizingReader);
                                 xsr.nextTag();
                                 String nextResumptionToken = null;
 
@@ -347,7 +358,7 @@ public class ZdbDumpCreationCronJob {
                                                             harvestUpdateCount);
                                                 }
                                             } catch (Exception e) {
-                                                logXmlWarning(url, fileName, e);
+                                                logXmlWarning(url, fileName, e, sanitizingReader);
                                             }
                                         }
                                     }
@@ -364,7 +375,7 @@ public class ZdbDumpCreationCronJob {
 
                                 return nextResumptionToken;
                             } catch (XMLStreamException e) {
-                                logXmlWarning(url, null, e);
+                                logXmlWarning(url, null, e, null);
                                 throw new IOException("Failed to parse harvest response from " + url, e);
                             }
                         });
@@ -429,22 +440,47 @@ public class ZdbDumpCreationCronJob {
         return current.getMessage() != null ? current.getMessage() : throwable.getMessage();
     }
 
-    private void logXmlWarning(String source, String datasetId, Exception exception) {
+    private void logXmlWarning(
+            String source,
+            String datasetId,
+            Exception exception,
+            XmlSanitizingReader sanitizingReader) {
         final XMLStreamException xmlException = findXmlStreamException(exception);
         final String datasetInfo = datasetId != null && !datasetId.isBlank() ? ", dataset=" + datasetId : "";
+        final String diagnosticContext = buildXmlDiagnosticContext(sanitizingReader);
 
         if (xmlException != null && xmlException.getLocation() != null) {
             log.warn(
-                    "Malformed XML in {}{} at line {}, column {}: {}",
+                    "Malformed XML in {}{} at line {}, column {}: {}{}",
                     source,
                     datasetInfo,
                     xmlException.getLocation().getLineNumber(),
                     xmlException.getLocation().getColumnNumber(),
-                    xmlException.getMessage());
+                    xmlException.getMessage(),
+                    diagnosticContext);
             return;
         }
 
-        log.warn("Malformed XML in {}{}: {}", source, datasetInfo, exception.getMessage());
+        log.warn("Malformed XML in {}{}: {}{}", source, datasetInfo, exception.getMessage(), diagnosticContext);
+    }
+
+    private String buildXmlDiagnosticContext(XmlSanitizingReader sanitizingReader) {
+        if (sanitizingReader == null) {
+            return "";
+        }
+
+        final String recentContext = sanitizingReader.getRecentContext();
+        final String lastMalformedEntity = sanitizingReader.getLastMalformedEntitySummary();
+        final List<String> diagnosticParts = new ArrayList<>();
+
+        if (!recentContext.isBlank()) {
+            diagnosticParts.add("recentContext='" + recentContext + "'");
+        }
+        if (lastMalformedEntity != null && !lastMalformedEntity.isBlank()) {
+            diagnosticParts.add(lastMalformedEntity);
+        }
+
+        return diagnosticParts.isEmpty() ? "" : ". " + String.join(", ", diagnosticParts);
     }
 
     private XMLStreamException findXmlStreamException(Throwable throwable) {
@@ -458,8 +494,12 @@ public class ZdbDumpCreationCronJob {
         return null;
     }
 
-    private XMLStreamReader createXmlStreamReader(Reader reader, String sourceDescription) throws XMLStreamException {
-        return xif.createXMLStreamReader(new XmlSanitizingReader(reader, sourceDescription, log));
+    private XmlSanitizingReader createSanitizingReader(Reader reader, String sourceDescription) {
+        return new XmlSanitizingReader(reader, sourceDescription, log);
+    }
+
+    private XMLStreamReader createXmlStreamReader(XmlSanitizingReader sanitizingReader) throws XMLStreamException {
+        return xif.createXMLStreamReader(sanitizingReader);
     }
 
     private void createNewZdbDump(String outputFile) throws FileNotFoundException, IOException, XMLStreamException {

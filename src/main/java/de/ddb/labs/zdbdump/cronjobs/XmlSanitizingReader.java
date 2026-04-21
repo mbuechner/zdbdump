@@ -23,14 +23,19 @@ import org.slf4j.Logger;
 final class XmlSanitizingReader extends Reader {
 
     private static final int MAX_ENTITY_LOOKAHEAD = 32;
+    private static final int RECENT_CONTEXT_LIMIT = 240;
 
     private final PushbackReader delegate;
     private final String sourceDescription;
     private final Logger log;
+    private final StringBuilder recentContext = new StringBuilder();
     private String pending = "";
     private int pendingIndex = 0;
     private int line = 1;
     private int column = 0;
+    private String lastMalformedEntity = null;
+    private int lastMalformedEntityLine = -1;
+    private int lastMalformedEntityColumn = -1;
 
     XmlSanitizingReader(Reader delegate, String sourceDescription, Logger log) {
         this.delegate = new PushbackReader(delegate, MAX_ENTITY_LOOKAHEAD);
@@ -100,6 +105,9 @@ final class XmlSanitizingReader extends Reader {
         if (isValidXmlEntity(entity)) {
             pending = entity;
         } else {
+            lastMalformedEntity = entity;
+            lastMalformedEntityLine = entityLine;
+            lastMalformedEntityColumn = entityColumn;
             log.warn(
                     "Recovered malformed XML entity in {} at line {}, column {}: '&{}'",
                     sourceDescription,
@@ -113,6 +121,7 @@ final class XmlSanitizingReader extends Reader {
     }
 
     private void updatePosition(char currentChar) {
+        appendRecentContext(currentChar);
         if (currentChar == '\n') {
             line++;
             column = 0;
@@ -121,11 +130,38 @@ final class XmlSanitizingReader extends Reader {
         }
     }
 
+    String getRecentContext() {
+        return abbreviate(escapeControlCharacters(recentContext.toString()));
+    }
+
+    String getLastMalformedEntitySummary() {
+        if (lastMalformedEntity == null) {
+            return null;
+        }
+        return "lastRecoveredEntity='&" + abbreviate(lastMalformedEntity) + "' at line "
+                + lastMalformedEntityLine + ", column " + lastMalformedEntityColumn;
+    }
+
+    private void appendRecentContext(char currentChar) {
+        recentContext.append(currentChar);
+        if (recentContext.length() > RECENT_CONTEXT_LIMIT) {
+            recentContext.delete(0, recentContext.length() - RECENT_CONTEXT_LIMIT);
+        }
+    }
+
     private String abbreviate(String value) {
         if (value == null || value.isBlank()) {
             return "";
         }
         return value.length() > 80 ? value.substring(0, 80) + "..." : value;
+    }
+
+    private String escapeControlCharacters(String value) {
+        return value
+                .replace("\\", "\\\\")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t");
     }
 
     private static boolean isValidXmlEntity(String entity) {
