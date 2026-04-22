@@ -155,6 +155,16 @@ public class ZdbDumpCreationCronJob {
         return namespaces;
     }
 
+    public ZdbDumpCreationCronJob() {
+
+        xif.setProperty("jdk.xml.maxGeneralEntitySizeLimit", Integer.valueOf(1_000_000));
+        xif.setProperty("jdk.xml.totalEntitySizeLimit", Integer.valueOf(10_000_000));
+
+        // Optional, but fail-safe
+        xif.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
+        xif.setProperty(XMLInputFactory.SUPPORT_DTD, Boolean.FALSE);
+    }
+
     @Scheduled(cron = "${zdbdump.cron.job}")
     @Retryable(retryFor = {
             Exception.class }, maxAttemptsExpression = "5", backoff = @Backoff(delayExpression = "600000"))
@@ -300,8 +310,8 @@ public class ZdbDumpCreationCronJob {
         try (final BufferedReader in = new BufferedReader(
                 new InputStreamReader(new GZIPInputStream(new FileInputStream(dumpFile)), StandardCharsets.UTF_8))) {
 
-            final XmlSanitizingReader sanitizingReader = createSanitizingReader(in, pathToZdbDump);
-            final XMLStreamReader xsr = createXmlStreamReader(sanitizingReader);
+            final XmlSanitizingReader sanitizingReader = new XmlSanitizingReader(in, pathToZdbDump, log);
+            final XMLStreamReader xsr = xif.createXMLStreamReader(sanitizingReader);
             xsr.nextTag(); // Advance to statements element
             mvStoreZdbData.clear();
             final TransformerFactory tf = TransformerFactory.newInstance();
@@ -368,10 +378,11 @@ public class ZdbDumpCreationCronJob {
                                     return null;
                                 }
 
-                                final XmlSanitizingReader sanitizingReader = createSanitizingReader(
+                                final XmlSanitizingReader sanitizingReader = new XmlSanitizingReader(
                                         new InputStreamReader(body, StandardCharsets.UTF_8),
-                                        url);
-                                final XMLStreamReader xsr = createXmlStreamReader(sanitizingReader);
+                                        url,
+                                        log);
+                                final XMLStreamReader xsr = xif.createXMLStreamReader(sanitizingReader);
                                 xsr.nextTag();
                                 String nextResumptionToken = null;
 
@@ -536,14 +547,6 @@ public class ZdbDumpCreationCronJob {
             current = current.getCause();
         }
         return null;
-    }
-
-    private XmlSanitizingReader createSanitizingReader(Reader reader, String sourceDescription) {
-        return new XmlSanitizingReader(reader, sourceDescription, log);
-    }
-
-    private XMLStreamReader createXmlStreamReader(XmlSanitizingReader sanitizingReader) throws XMLStreamException {
-        return xif.createXMLStreamReader(sanitizingReader);
     }
 
     private void createNewZdbDump(String outputFile) throws FileNotFoundException, IOException, XMLStreamException {
