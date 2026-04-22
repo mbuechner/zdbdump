@@ -9,7 +9,7 @@
     </parent>
     <groupId>de.ddb.labs</groupId>
     <artifactId>zdbdump</artifactId>
-    <version>1.1</version>
+    <version>1.2</version>
     <packaging>jar</packaging>
     <name>zdbdump</name>
     <description>Spring Boot service for generating and serving an up-to-date RDF dump of the German Union Catalogue of Serials (ZDB).</description>
