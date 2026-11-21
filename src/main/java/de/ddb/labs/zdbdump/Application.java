@@ -15,109 +15,115 @@
  */
 package de.ddb.labs.zdbdump;
 
-import jakarta.annotation.PreDestroy;
+import de.ddb.labs.zdbdump.dump.DumpPaths;
 import java.io.IOException;
 import java.net.http.HttpClient;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import org.h2.mvstore.DataUtils;
 import org.h2.mvstore.MVMap;
 import org.h2.mvstore.MVStore;
+import org.h2.mvstore.MVStoreException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.event.EventListener;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
-import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.web.client.RestClient;
 
+/**
+ * Starts the Spring Boot service and configures the storage and upstream HTTP client used by dump generation.
+ * Spring closes the store and the shared HTTP client when the service shuts down.
+ */
 @SpringBootApplication
-@EnableScheduling
-@ConditionalOnProperty(name = "scheduler.enabled", matchIfMissing = true)
-@EnableRetry
 @EnableAsync
 public class Application {
 
     private static final Logger log = LoggerFactory.getLogger(Application.class);
 
-    @Value("${zdbdump.path.temp}")
-    private String tempPath;
+    /** Creates the service configuration used by Spring Boot during startup. */
+    public Application() {
+    }
 
-    @Value("${zdbdump.path.output}")
-    private String outputPath;
-
-    @Value("${zdbdump.database}")
-    private String databaseName;
-
-    private MVStore mvStore; // Key-Value-Store
-
-    private MVMap<String, String> mvStoreZdbData;
-
+    /**
+     * Launches the service and passes its command-line options to Spring Boot.
+     *
+     * @param args Spring Boot application arguments
+     */
     public static void main(String[] args) {
         SpringApplication.run(Application.class, args);
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    private void afterStartup() throws IOException {
-        Files.createDirectories(Path.of(tempPath));
-        Files.createDirectories(Path.of(outputPath));
+    /** Resolves storage paths once for both startup validation and runtime access. */
+    @Bean
+    DumpPaths dumpPaths(@Value("${zdbdump.path.temp}") String tempPath,
+            @Value("${zdbdump.path.output}") String outputPath,
+            @Value("${zdbdump.output.filename}") String outputFilename,
+            @Value("${zdbdump.database}") String databaseName) throws IOException {
+        return DumpPaths.prepare(outputPath, tempPath, outputFilename, databaseName);
     }
 
-    @PreDestroy
-    private void destroy() {
-        log.info("Destroy callback triggered: Closing database ...");
+    /** Opens the on-disk working store after the dump paths have been checked for collisions. */
+    @Bean(destroyMethod = "close")
+    MVStore mvStore(DumpPaths paths) {
+        final Path databasePath = paths.databaseFile();
         try {
-            if (mvStore != null) {
-                mvStore.close();
-            }
-        } catch (Exception e) {
-            log.error("Could not close connection to database. {}", e.getMessage());
+            final MVStore store = new MVStore.Builder()
+                    .fileName(databasePath.toString())
+                    .compress()
+                    .open();
+            log.info("Opened MVStore database at {}", databasePath);
+            return store;
+        } catch (MVStoreException e) {
+            final String detail = switch (e.getErrorCode()) {
+                case DataUtils.ERROR_FILE_LOCKED -> " The database file is already locked.";
+                case DataUtils.ERROR_FILE_CORRUPT -> " MVStore reported a corrupt database file.";
+                case DataUtils.ERROR_UNSUPPORTED_FORMAT -> " MVStore reported an unsupported database format.";
+                default -> " MVStore error code " + e.getErrorCode() + ".";
+            };
+            throw new IllegalStateException("Could not open MVStore database at " + databasePath + "." + detail, e);
         }
     }
 
-    private void initMvStore() {
-        if (mvStore == null) {
-            try {
-                final Path tempDirectory = Path.of(tempPath);
-                Files.createDirectories(tempDirectory);
-                mvStore = new MVStore.Builder()
-                        .fileName(tempDirectory.resolve(databaseName).toString())
-                        .compress()
-                        // .compressHigh()
-                        .open();
-            } catch (IOException e) {
-                throw new IllegalStateException("Could not initialize temp directory for MVStore", e);
-            }
-        }
-    }
-
+    /** Exposes the named map where dump generation merges RDF records by subject. */
     @Bean
-    protected MVMap<String, String> mvStoreZdbData() {
-        if (mvStoreZdbData == null) {
-            initMvStore();
-            mvStoreZdbData = mvStore.openMap("zdbdump");
+    MVMap<String, String> mvStoreZdbData(MVStore mvStore) {
+        try {
+            return mvStore.openMap("zdbdump");
+        } catch (MVStoreException e) {
+            throw new IllegalStateException("Could not open the ZDB data map in MVStore", e);
         }
-        return mvStoreZdbData;
     }
 
-    @Bean
-    protected RestClient restClient() {
-        final HttpClient httpClient = HttpClient.newBuilder()
+    /** Shares one connection pool between upstream requests and closes it at shutdown. */
+    @Bean(destroyMethod = "close")
+    HttpClient httpClient() {
+        return HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(60))
                 .build();
+    }
 
+    /** Uses the shared client with a read timeout that allows large upstream dump responses. */
+    @Bean
+    RestClient restClient(HttpClient httpClient) {
         final JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(Duration.ofMinutes(10));
 
         return RestClient.builder()
                 .requestFactory(requestFactory)
                 .build();
+    }
+
+    /** Controls scheduled runs independently of the manual HTTP trigger. */
+    @Configuration(proxyBeanMethods = false)
+    @EnableScheduling
+    @ConditionalOnProperty(name = "scheduler.enabled", havingValue = "true", matchIfMissing = true)
+    static class SchedulingConfiguration {
     }
 }

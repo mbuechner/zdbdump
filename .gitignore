@@ -1,6 +1,5 @@
 HELP.md
 target/
-!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
 *.db
@@ -41,4 +40,7 @@ build/
 ### VS Code ###
 .vscode/
 /nbactions.xml
-/.mvn
+/.mvn/*
+!/.mvn/wrapper/
+/.mvn/wrapper/*
+!/.mvn/wrapper/maven-wrapper.properties
