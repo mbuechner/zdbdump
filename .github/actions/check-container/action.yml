@@ -1,0 +1,227 @@
+name: Check release container
+description: Test HTTP startup and scan the image and its optional CycloneDX SBOM.
+
+inputs:
+  image:
+    description: Already pulled registry digest or local image tag.
+    required: true
+  container-port:
+    description: Port on which the HTTP server listens inside the container.
+    required: true
+  http-path:
+    description: HTTP path that must return a 2xx response on startup.
+    default: '/actuator/health'
+  container-user:
+    description: Optional Docker user or UID and group. Defaults to the image user.
+    default: ''
+  container-env:
+    description: Optional environment variables, one NAME=VALUE pair per line.
+    default: ''
+  smoke-test:
+    description: Start the container and probe HTTP. A scan-only run leaves the container stopped.
+    default: 'true'
+  startup-attempts:
+    description: Maximum number of HTTP requests, from 1 to 60.
+    default: '25'
+  startup-delay-seconds:
+    description: Seconds between HTTP attempts, from 0 to 30.
+    default: '1'
+  request-timeout-seconds:
+    description: Time limit for each HTTP request, from 1 to 15 seconds.
+    default: '5'
+  cyclonedx-path:
+    description: Optional absolute path to a CycloneDX JSON SBOM inside the image.
+    default: ''
+  block-on-fixable:
+    description: Fail when a High or Critical finding has an available fix.
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Check HTTP startup and collect the optional SBOM
+      id: prepare
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        CONTAINER_PORT: ${{ inputs.container-port }}
+        HTTP_PATH: ${{ inputs.http-path }}
+        CONTAINER_USER: ${{ inputs.container-user }}
+        CONTAINER_ENV: ${{ inputs.container-env }}
+        SMOKE_TEST: ${{ inputs.smoke-test }}
+        STARTUP_ATTEMPTS: ${{ inputs.startup-attempts }}
+        STARTUP_DELAY: ${{ inputs.startup-delay-seconds }}
+        REQUEST_TIMEOUT: ${{ inputs.request-timeout-seconds }}
+        CYCLONEDX_PATH: ${{ inputs.cyclonedx-path }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$CONTAINER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( CONTAINER_PORT > 65535 )); then
+          echo '::error::container-port must be an integer from 1 to 65535.'
+          exit 1
+        fi
+        if [[ ! "$STARTUP_ATTEMPTS" =~ ^([1-9]|[1-5][0-9]|60)$ ||
+              ! "$STARTUP_DELAY" =~ ^([0-9]|[12][0-9]|30)$ ||
+              ! "$REQUEST_TIMEOUT" =~ ^([1-9]|1[0-5])$ ]]; then
+          echo '::error::Invalid HTTP startup attempt, delay, or timeout value.'
+          exit 1
+        fi
+        if [[ "$HTTP_PATH" != /* || "$HTTP_PATH" =~ [[:cntrl:]] ||
+              ( -n "$CYCLONEDX_PATH" && "$CYCLONEDX_PATH" != /* ) || "$CYCLONEDX_PATH" =~ [[:cntrl:]] ]]; then
+          echo '::error::http-path and any cyclonedx-path must be absolute paths without control characters.'
+          exit 1
+        fi
+        if [[ "$SMOKE_TEST" != 'true' && "$SMOKE_TEST" != 'false' ]]; then
+          echo '::error::smoke-test must be true or false.'
+          exit 1
+        fi
+
+        reports="$(mktemp -d "$RUNNER_TEMP/zdbdump-container-check.XXXXXX")"
+        printf 'reports=%s\n' "$reports" >> "$GITHUB_OUTPUT"
+        if [[ "$SMOKE_TEST" == 'false' && -z "$CYCLONEDX_PATH" ]]; then
+          exit 0
+        fi
+
+        args=(--pull=never)
+        if [[ -n "$CONTAINER_USER" ]]; then
+          args+=(--user "$CONTAINER_USER")
+        fi
+        while IFS= read -r entry; do
+          [[ -z "$entry" ]] && continue
+          if [[ ! "$entry" =~ ^[A-Za-z_][A-Za-z0-9_.-]*= ]]; then
+            echo '::error::Each container-env entry must use NAME=VALUE.'
+            exit 1
+          fi
+          args+=(--env "$entry")
+        done <<< "$CONTAINER_ENV"
+
+        if [[ "$SMOKE_TEST" == 'true' ]]; then
+          args+=(--publish "127.0.0.1::${CONTAINER_PORT}")
+        fi
+        container="$(docker create "${args[@]}" -- "$IMAGE")"
+        cleanup() {
+          status=$?
+          trap - EXIT
+          if [[ "$status" -ne 0 ]]; then
+            docker inspect --format '{{json .State}}' "$container" >&2 || true
+            docker logs --tail 100 "$container" >&2 || true
+          fi
+          docker rm -f "$container" >/dev/null || true
+          exit "$status"
+        }
+        trap cleanup EXIT
+
+        if [[ "$SMOKE_TEST" == 'true' ]]; then
+          docker start "$container" >/dev/null
+          address="$(docker port "$container" "${CONTAINER_PORT}/tcp")"
+          if [[ ! "$address" =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
+            echo '::error::Docker did not expose the expected loopback port.'
+            exit 1
+          fi
+          passed=false
+          for (( attempt = 1; attempt <= STARTUP_ATTEMPTS; attempt++ )); do
+            if status_code="$(curl --silent --globoff --noproxy '*' --max-time "$REQUEST_TIMEOUT" \
+                --output /dev/null --write-out '%{http_code}' -- "http://${address}${HTTP_PATH}")" &&
+                [[ "$status_code" =~ ^2[0-9]{2}$ ]]; then
+              echo "HTTP probe passed with status $status_code on attempt $attempt."
+              passed=true
+              break
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" != 'true' ]]; then
+              echo '::error::The container exited before the HTTP probe succeeded.'
+              exit 1
+            fi
+            if (( attempt < STARTUP_ATTEMPTS )); then
+              sleep "$STARTUP_DELAY"
+            fi
+          done
+          if [[ "$passed" != 'true' ]]; then
+            echo "::error::The HTTP probe failed after $STARTUP_ATTEMPTS attempts. Last status: $status_code."
+            exit 1
+          fi
+        fi
+
+        if [[ -n "$CYCLONEDX_PATH" ]]; then
+          sbom="$reports/cyclonedx.json"
+          if docker cp "$container:$CYCLONEDX_PATH" "$sbom" 2>"$reports/sbom-copy.log"; then
+            if [[ ! -f "$sbom" || -L "$sbom" ]] ||
+                ! jq -e '.bomFormat == "CycloneDX" and (.components | type == "array" and length > 0)' "$sbom" >/dev/null; then
+              echo '::error::Expected a CycloneDX JSON document with components.'
+              exit 1
+            fi
+            printf 'sbom=%s\n' "$sbom" >> "$GITHUB_OUTPUT"
+          elif grep -qi 'could not find the file' "$reports/sbom-copy.log"; then
+            echo 'This release image has no CycloneDX SBOM at the configured path.'
+          else
+            cat "$reports/sbom-copy.log" >&2
+            exit 1
+          fi
+        fi
+
+    - name: Scan the image for known vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      env:
+        TRIVY_IMAGE_SRC: docker
+      with:
+        version: v0.76.2
+        scan-type: image
+        image-ref: ${{ inputs.image }}
+        scanners: vuln
+        format: json
+        output: ${{ steps.prepare.outputs.reports }}/image-scan.json
+        exit-code: '0'
+
+    - name: Scan dependencies from the image SBOM
+      if: steps.prepare.outputs.sbom != ''
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        version: v0.76.2
+        scan-type: sbom
+        scan-ref: ${{ steps.prepare.outputs.sbom }}
+        scanners: vuln
+        format: json
+        output: ${{ steps.prepare.outputs.reports }}/sbom-scan.json
+        exit-code: '0'
+        skip-setup-trivy: 'true'
+        cache: 'false'
+
+    - name: Summarize findings and apply the release gate
+      shell: bash
+      env:
+        REPORTS: ${{ steps.prepare.outputs.reports }}
+        SBOM: ${{ steps.prepare.outputs.sbom }}
+        BLOCK_ON_FIXABLE: ${{ inputs.block-on-fixable }}
+      run: |
+        set -euo pipefail
+        if [[ "$BLOCK_ON_FIXABLE" != 'true' && "$BLOCK_ON_FIXABLE" != 'false' ]]; then
+          echo '::error::block-on-fixable must be true or false.'
+          exit 1
+        fi
+        reports=("$REPORTS/image-scan.json")
+        if [[ -n "$SBOM" ]]; then
+          reports+=("$REPORTS/sbom-scan.json")
+        fi
+        for report in "${reports[@]}"; do
+          jq -e '.SchemaVersion == 2 and (.Results == null or (.Results | type == "array"))' "$report" >/dev/null
+        done
+        jq -s '
+          [.[].Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")]
+          | unique_by(.VulnerabilityID, .PkgName, .InstalledVersion, .Severity, .FixedVersion)
+        ' "${reports[@]}" > "$REPORTS/findings.json"
+        fixable="$(jq '[.[] | select((.FixedVersion // "") != "")] | length' "$REPORTS/findings.json")"
+        {
+          echo '### High and Critical vulnerabilities'
+          echo
+          echo '| Advisory | Package | Installed version | Severity | Fixed version |'
+          echo '| --- | --- | --- | --- | --- |'
+          jq -r '
+            .[] | [.VulnerabilityID, .PkgName, .InstalledVersion, .Severity, .FixedVersion]
+            | map((. // "") | gsub("[[:cntrl:]|<>]"; " "))
+            | "| " + join(" | ") + " |"
+          ' "$REPORTS/findings.json"
+          echo
+          echo "Findings with fixes available: $fixable"
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [[ "$BLOCK_ON_FIXABLE" == 'true' && "$fixable" -gt 0 ]]; then
+          echo '::error::High or Critical vulnerabilities with available fixes block promotion. See the job summary.'
+          exit 1
+        fi

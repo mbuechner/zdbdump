@@ -1,0 +1,52 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: '13 6 * * *'
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: '*'
+        update-types: [version-update:semver-minor, version-update:semver-patch]
+    groups:
+      maven-minor-patch:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # Both releases can lose committed data after a crash (h2database/h2database#4446).
+      - dependency-name: com.h2database:h2-mvstore
+        versions: ['2.5.250', '2.5.252']
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/check-container
+    schedule:
+      interval: cron
+      cronjob: '23 6 * * *'
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: '*'
+        update-types: [version-update:semver-minor, version-update:semver-patch]
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: '33 6 * * *'
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 1
+    ignore:
+      - dependency-name: amazoncorretto
+        versions: ['>= 26']
+      # The release workflow tracks the Maven 3 and Corretto 25 base by digest.
+      - dependency-name: maven
