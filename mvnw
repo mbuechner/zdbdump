@@ -109,7 +109,7 @@ scriptDir="$(dirname "$0")"
 scriptName="$(basename "$0")"
 
 # parse distributionUrl and optional distributionSha256Sum, requires .mvn/wrapper/maven-wrapper.properties
-while IFS="=" read -r key value || [ -n "${key-}" ]; do
+while IFS="=" read -r key value; do
   case "${key-}" in
   distributionUrl) distributionUrl=$(trim "${value-}") ;;
   distributionSha256Sum) distributionSha256Sum=$(trim "${value-}") ;;
@@ -136,36 +136,21 @@ maven-mvnd-*) MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/ ;;
 *) MVN_CMD="mvn${scriptName#mvnw}" _MVNW_REPO_PATTERN=/org/apache/maven/ ;;
 esac
 
-if [ -n "${distributionSha256Sum-}" ]; then
-  case "$distributionSha256Sum" in
-  *[!0123456789ABCDEFabcdef]*) die "distributionSha256Sum must contain exactly 64 hexadecimal characters." ;;
-  esac
-  [ "${#distributionSha256Sum}" -eq 64 ] || die "distributionSha256Sum must contain exactly 64 hexadecimal characters."
-  [ "$MVN_CMD" != mvnd.sh ] || die "Checksum validation is not supported for maven-mvnd."
-  distributionSha256Sum=$(printf '%s' "$distributionSha256Sum" | tr 'A-F' 'a-f')
-fi
-
 # apply MVNW_REPOURL and calculate MAVEN_HOME
-# Include the checksum so only a cache entry installed with the current pin can be reused.
+# maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
 [ -z "${MVNW_REPOURL-}" ] || distributionUrl="$MVNW_REPOURL$_MVNW_REPO_PATTERN${distributionUrl#*"$_MVNW_REPO_PATTERN"}"
 distributionUrlName="${distributionUrl##*/}"
 distributionUrlNameMain="${distributionUrlName%.*}"
 distributionUrlNameMain="${distributionUrlNameMain%-bin}"
 MAVEN_USER_HOME="${MAVEN_USER_HOME:-${HOME}/.m2}"
-MAVEN_HOME_PARENT="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}"
-MAVEN_HOME_NAME="$(hash_string "$distributionUrl")${distributionSha256Sum:+-$distributionSha256Sum}"
-MAVEN_HOME="$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
+MAVEN_HOME="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}/$(hash_string "$distributionUrl")"
 
 exec_maven() {
   unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL || :
   exec "$MAVEN_HOME/bin/$MVN_CMD" "$@" || die "cannot exec $MAVEN_HOME/bin/$MVN_CMD"
 }
 
-has_maven_command() {
-  [ -f "$1/bin/$MVN_CMD" ] && [ -x "$1/bin/$MVN_CMD" ]
-}
-
-if has_maven_command "$MAVEN_HOME"; then
+if [ -d "$MAVEN_HOME" ]; then
   verbose "found existing MAVEN_HOME at $MAVEN_HOME"
   exec_maven "$@"
 fi
@@ -175,26 +160,26 @@ case "${distributionUrl-}" in
 *) die "distributionUrl is not valid, must match *-bin.zip or maven-mvnd-*.zip, but found '${distributionUrl-}'" ;;
 esac
 
-# select .zip or .tar.gz
-if ! command -v unzip >/dev/null; then
-  [ -z "${distributionSha256Sum-}" ] || die "unzip is required to install the checksum-verified Maven ZIP."
-  distributionUrl="${distributionUrl%.zip}.tar.gz"
-  distributionUrlName="${distributionUrl##*/}"
+# prepare tmp dir
+if TMP_DOWNLOAD_DIR="$(mktemp -d)" && [ -d "$TMP_DOWNLOAD_DIR" ]; then
+  clean() { rm -rf -- "$TMP_DOWNLOAD_DIR"; }
+  trap clean HUP INT TERM EXIT
+else
+  die "cannot create temp dir"
 fi
 
-# Stage the download on the same filesystem as the cache destination.
-mkdir -p -- "$MAVEN_HOME_PARENT"
-MAVEN_HOME_PARENT="$(cd -- "$MAVEN_HOME_PARENT" && pwd -P)"
-MAVEN_HOME="$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
-TMP_DOWNLOAD_DIR="$(mktemp -d "$MAVEN_HOME_PARENT/.mvnw-XXXXXXXX")" || die "cannot create temp dir"
-clean() { rm -rf -- "$TMP_DOWNLOAD_DIR"; }
-trap clean EXIT
-trap 'exit 1' HUP INT TERM
+mkdir -p -- "${MAVEN_HOME%/*}"
 
 # Download and Install Apache Maven
 verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
 verbose "Downloading from: $distributionUrl"
 verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
+
+# select .zip or .tar.gz
+if ! command -v unzip >/dev/null; then
+  distributionUrl="${distributionUrl%.zip}.tar.gz"
+  distributionUrlName="${distributionUrl##*/}"
+fi
 
 # verbose opt
 __MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q __MVNW_QUIET_TAR=''
@@ -240,7 +225,11 @@ fi
 # If specified, validate the SHA-256 sum of the Maven distribution zip file
 if [ -n "${distributionSha256Sum-}" ]; then
   distributionSha256Result=false
-  if command -v sha256sum >/dev/null; then
+  if [ "$MVN_CMD" = mvnd.sh ]; then
+    echo "Checksum validation is not supported for maven-mvnd." >&2
+    echo "Please disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+    exit 1
+  elif command -v sha256sum >/dev/null; then
     if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | sha256sum -c - >/dev/null 2>&1; then
       distributionSha256Result=true
     fi
@@ -271,8 +260,10 @@ fi
 actualDistributionDir=""
 
 # First try the expected directory name (for regular distributions)
-if has_maven_command "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain"; then
-  actualDistributionDir="$distributionUrlNameMain"
+if [ -d "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain" ]; then
+  if [ -f "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain/bin/$MVN_CMD" ]; then
+    actualDistributionDir="$distributionUrlNameMain"
+  fi
 fi
 
 # If not found, search for any directory with the Maven executable (for snapshots)
@@ -280,9 +271,11 @@ if [ -z "$actualDistributionDir" ]; then
   # enable globbing to iterate over items
   set +f
   for dir in "$TMP_DOWNLOAD_DIR"/*; do
-    if has_maven_command "$dir"; then
-      actualDistributionDir="$(basename "$dir")"
-      break
+    if [ -d "$dir" ]; then
+      if [ -f "$dir/bin/$MVN_CMD" ]; then
+        actualDistributionDir="$(basename "$dir")"
+        break
+      fi
     fi
   done
   set -f
@@ -296,12 +289,7 @@ fi
 
 verbose "Found extracted Maven distribution directory: $actualDistributionDir"
 printf %s\\n "$distributionUrl" >"$TMP_DOWNLOAD_DIR/$actualDistributionDir/mvnw.url"
-mkdir -- "$TMP_DOWNLOAD_DIR/ready"
-mv -- "$TMP_DOWNLOAD_DIR/$actualDistributionDir" "$TMP_DOWNLOAD_DIR/ready/$MAVEN_HOME_NAME"
-# Move into the parent using the final name so a concurrent installation cannot be nested.
-if ! mv -f -- "$TMP_DOWNLOAD_DIR/ready/$MAVEN_HOME_NAME" "$MAVEN_HOME_PARENT" 2>/dev/null; then
-  has_maven_command "$MAVEN_HOME" || die "cannot install Maven at $MAVEN_HOME"
-fi
+mv -- "$TMP_DOWNLOAD_DIR/$actualDistributionDir" "$MAVEN_HOME" || [ -d "$MAVEN_HOME" ] || die "fail to move MAVEN_HOME"
 
 clean || :
 exec_maven "$@"
